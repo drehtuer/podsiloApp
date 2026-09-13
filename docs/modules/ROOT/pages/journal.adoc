@@ -6661,3 +6661,30 @@ performance reason for the omission; it looks like a step that was described and
 *Verified:* `./gradlew detekt --rerun-tasks` on `main` -- twelve tasks executed, zero findings. The
 first run reported `UP-TO-DATE` for everything from this session's earlier caches, which is not a
 verification of anything; `--rerun-tasks` is what makes the green mean something.
+
+
+== 2026-09-13 (release) — 0.7.2, one behaviour change and an honest count
+
+*Attempted:* cut v0.7.2.
+
+*What is actually in it, checked rather than assumed.* `git log v0.7.1..main` is four commits and
+two merges, and `git diff v0.7.1..main -- '*/src/**'` is *two files*: `SyncOrchestrator.kt` and the
+new `ServerDidNotKeepActionsTest.kt`. `gradle/libs.versions.toml` is untouched, so unlike 0.7.1
+there are not even dependency bumps to list.
+
+So the release is one sentence: *Podsilo now notices when Nextcloud accepts an episode action and
+keeps nothing, and records it in the error log against the podcast it happened to.* The other merge
+of the day -- CI actually running `detekt` -- does not reach the APK and is not release notes,
+however much activity it represented.
+
+*The trap this release procedure walks into is the README,* and this time it was the documentation
+that was wrong rather than the person. `dev-environment.adoc` §10 step 1 still read "`Merge the
+chore(release): X.Y.Z commit (version bump + README status line)`" -- but that status block was
+deliberately removed at 0.7.1, with the 0.7.1 journal entry saying in terms "`Do not reintroduce it
+at the next bump`". Following the documented procedure literally would have put it straight back.
+Fixed in the same change as the bump, because a release procedure is only worth having if it is the
+one actually followed.
+
+*The immutable-release order still governs everything:* merge the bump, push the tag, wait for CI to
+attach the APKs to the *draft*, then publish. Publishing first burns the version number for good --
+that is how v0.5.0 was lost, and the tag stays reserved even after the release is deleted.

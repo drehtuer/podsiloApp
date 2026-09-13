@@ -68,7 +68,7 @@ android {
         targetSdk = 37
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = gitCommitCount()
-        versionName = "0.7.1"
+        versionName = "0.7.2"
 
         buildConfigField("String", "BUILD_TIME", "\"$buildTimestamp\"")
         buildConfigField("String", "GIT_SHA", "\"${gitShortSha()}\"")

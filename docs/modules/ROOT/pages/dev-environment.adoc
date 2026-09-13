@@ -1334,7 +1334,11 @@ and watching zero workflow runs start. *The tag push is the trigger.*
 
 So the order is not optional:
 
-. Merge the `chore(release): X.Y.Z` commit (version bump + README status line) to `main`.
+. Merge the `chore(release): X.Y.Z` commit to `main`. It is the `versionName` bump in
+`app/build.gradle.kts` and nothing else -- the README status block this step used to ask for
+was removed at v0.7.1 and must not come back, because release-specific prose in a file that
+describes the project goes stale the moment a release does. The Release badge carries the
+current version instead.
 . Push the tag:
 +
 [,sh]

@@ -144,6 +144,23 @@ jobs:
       - name: ktlint
         run: ./gradlew ktlintCheck
 
+      # The other half of the pair CLAUDE.md §12 names, and it was missing: the
+      # header above has always listed detekt among the eight checks, and no step
+      # ran it. So the definition of done asked for something the badge did not
+      # answer, and a project-wide detekt regression could reach `main` green.
+      #
+      # It costs almost nothing, which is what makes the omission worth fixing
+      # rather than documenting away. detekt reads the sources without type
+      # resolution, so it resolves no dependency and compiles nothing: a full
+      # `--rerun-tasks` over all twelve modules is six seconds locally, against
+      # ten minutes for the test step below.
+      #
+      # Placed beside ktlint deliberately - both read Kotlin rather than the
+      # platform, both fail on findings rather than warnings, and neither needs
+      # anything the other does not.
+      - name: detekt
+        run: ./gradlew detekt
+
       # Android lint, which is a different question from ktlint and detekt: those
       # read Kotlin as text and as a syntax tree, this one knows the platform —
       # API levels, manifest merging, resource shrinking, SAF, WorkManager. It is

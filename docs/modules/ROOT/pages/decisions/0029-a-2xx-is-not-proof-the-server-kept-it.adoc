@@ -1,0 +1,113 @@
+= 0029 -- A 2xx is not proof: verifying that Nextcloud kept what we pushed
+// SPDX-License-Identifier: GPL-3.0-or-later
+:idprefix:
+:idseparator: -
+
+*Status:* Accepted (2026-09-13). Found on the author's own instance, on Supercast feeds.
+
+Does not touch ``decisions/0023``'s mark-on-download, ``decisions/0022``'s reading of `PLAY`, or the
+order of operations in CLAUDE.md §5. It adds one check to the end of a pass, and nothing else.
+
+== Context
+
+Some podcasts never remembered that they had been played or downloaded -- in Podsilo's other clients
+*and* in RePod, which is what ruled out reconciliation here and pointed at the server. The feeds that
+did it were the paid, per-subscriber kind: Supercast signs every enclosure URL with a token, and the
+result is 516--517 characters long.
+
+`gpodder_episode_action.episode` is `VARCHAR(500)`, and has been since that table was created
+(`Version0001Date20210520063113`). `guid` and `podcast` are the same width. What happens to an action
+that does not fit is the part that matters:
+
+[,php]
+----
+try {
+    $episodeActionEntities[] = $this->episodeActionWriter->save($episodeActionEntity);
+} catch (Exception $exception) {
+    if ($exception->getReason() === Exception::REASON_UNIQUE_CONSTRAINT_VIOLATION) {
+        // ... update instead
+    }
+}
+----
+
+`EpisodeActionSaver::saveEpisodeActions` catches every `OCP\DB\Exception`, asks whether it was a
+unique-constraint violation, and -- when it was not, as a "Data too long for column" is not -- falls
+out of the `catch` with *no rethrow and no log*. `EpisodeActionController::create` never looks at
+what the saver returned and answers `200 {"timestamp": ...}` regardless.
+
+So Podsilo posted the action, read a 2xx, set `syncedToServer = true`, and the server held nothing.
+The episode stayed new in every other client for ever, and **nothing anywhere said so** -- which is
+the exact failure CLAUDE.md §11 calls the single most important invariant in the app, arriving
+without an error to read.
+
+This is known upstream and was never fixed. `thrillfall/nextcloud-gpodder#81` has it diagnosed by a
+user hitting the same thing on Acast at 612 characters, and the maintainer's reply -- "Ooooooooooohhhhhh.
+Thanks!. Well increase the length then" -- was in 2022. 3.17.0 still creates the column at 500. Only
+`gpodder_subscriptions.url` was ever widened (that app's `Version0006`), which is why *subscribing* to
+such a feed works and marking its episodes played does not.
+
+Whether the write errors or truncates depends on the backend: PostgreSQL and a strict-mode
+MySQL/MariaDB refuse it, a non-strict MySQL stores the first 500 characters, and SQLite ignores the
+declared width altogether. The last is why `opodsync` -- the test server in `.devcontainer` -- cannot
+reproduce any of this.
+
+== Decision
+
+*Two changes, in two repositories.*
+
+=== The server is fixed, and kept fixed
+
+`roles/cloud` in the author's Ansible repository widens `podcast`, `episode` and `guid` to 1000
+characters, re-asserting it on every run so an app update that recreates the column at 500 is
+corrected rather than silently resuming the data loss. 1000 is the upstream `Version0006` that
+widened the subscriptions table, applied to the second one.
+
+*No index work, and that is a MariaDB fact rather than an oversight.* Widening a column that a
+unique index covers looks like it must fail -- InnoDB caps an index key at 3072 bytes and a full
+utf8mb4 `VARCHAR(1000)` is 4000 on its own. Since 10.4 MariaDB implements such an index as a hash
+over the whole value and converts the existing one in place as the column grows, so the widen
+succeeds alone. This ADR originally specified rebuilding the two indexes over a 500-character prefix
+first, copying `Version0006`; the author tested it on `mariadb:10.11` and it is *a no-op* -- at that
+point the columns still are 500, so the prefixes normalise away and `SHOW CREATE TABLE` is
+byte-identical afterwards. A prefix only survives if it is added *after* the widen, which is how the
+app's own migration ends up with `(url(500), user_id)`: Doctrine emits the index against the final
+schema rather than in written order.
+
+The hash index is the better end state anyway, because it makes the constraint *stricter* than
+upstream's: uniqueness is on the whole value, so two episode URLs sharing their first 500 characters
+are two rows here and one row next door. What it ties the fix to is MariaDB -- MySQL has no such
+conversion and refuses the widen outright.
+
+=== Podsilo verifies, and says so when the answer is no
+
+`SyncOrchestrator.reportActionsTheServerDidNotKeep` compares what the push sent against what the pull
+in the same pass returned. Anything sent and not returned is recorded in the error log (S8) under
+`SYNC`, against the feed, naming the count and the measured URL length.
+
+*The proof costs no extra request*, which is why this is worth doing at all rather than being a
+second round trip on every sync. The server selects `WHERE timestamp_epoch > :since` on the
+*client-authored* timestamp inside each action -- the value this device wrote. For our own rows the
+comparison is therefore between two numbers on the same clock, and any row we sent whose `actionedAt`
+is later than the `since` we asked for *must* come back if the server kept it.
+
+The check is deliberately asymmetric. A device whose clock runs behind the server's fails the
+`askedSince` test and is simply not checked, so skew can only ever silence this -- never make it
+report a loss that did not happen. The same applies to the truncating backend: the action comes back
+keyed by its `guid`, which still matches, so a truncated-but-stored action stays quiet.
+
+== Consequences
+
+* *The rows are not put back in the outbox.* Re-sending the same oversized URL fails identically
+for ever, so an outbox that retried would be a permanent stuck count and a permanent repeat of the
+same log entry. The entry names the repair instead: once the server can store them, S4's _Send this
+device's state to Nextcloud_ re-sends every decision, including ones already marked synced.
+* *The entry carries no URL*, per `UI.adoc` §11 -- and for a stronger reason than layout here: these
+are precisely the feeds whose enclosure URLs embed a subscriber token.
+* *It is grouped per feed, not per episode.* The cause is a property of the feed -- one podcast's
+URLs are all too long or none of them are -- and 22 identical rows would bury the log the entry
+exists to explain.
+* *`forcePush` is not covered*, since it does not pull afterwards and so has nothing to check
+against. The ordinary pass covers every new decision, which is where this matters.
+* *It generalises past the column width.* The check asks "did the server keep what it said it took",
+not "is this URL too long" -- so a future silent drop for some other reason surfaces the same way,
+and no server-side constant is hardcoded in the client.

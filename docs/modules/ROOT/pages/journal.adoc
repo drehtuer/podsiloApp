@@ -6533,3 +6533,101 @@ signed `CN=Podsilo` -- the name is derived from `versionName`, so building it is
 took. *Unverified:* nothing has been installed on a phone from this build; the app code is unchanged
 from v0.7.0 apart from the one string, which is why that is acceptable here and would not be for a
 feature release.
+
+
+== 2026-09-13 — Some podcasts never stayed played, and the server was answering 200 while storing nothing
+
+*Attempted:* diagnose why episodes on a few podcasts kept coming back as new -- in Podsilo, and in
+RePod, which is what made it interesting.
+
+*The report named the shape of the answer before I started looking.* "`Also visible in the Nextcloud
+podcast app`" rules out reconciliation here: two independent clients reading the same log and both
+seeing nothing means the log has nothing in it. And "`feeds on supercast with a user specific hash`"
+says the feeds differ from the working ones in exactly one measurable way. So the question was never
+"`what is wrong with sync`" but "`what about this feed does the server not like`".
+
+Measuring it took one `curl`: every enclosure URL in that feed is *516--517 characters*, because
+Supercast signs each one with a per-subscriber token. `gpodder_episode_action.episode` is
+`VARCHAR(500)`, and has been since the table was created in 2021.
+
+*The part that makes it a silent failure rather than an error* is eleven lines of
+`EpisodeActionSaver::saveEpisodeActions`: it catches every `OCP\DB\Exception`, asks whether the
+reason was a unique-constraint violation, and -- when it was not, as "`Data too long for column`"
+is not -- falls out of the `catch` with no rethrow and no log. `EpisodeActionController::create`
+never reads what the saver returned and answers `200 {"timestamp": ...}` either way. So Podsilo
+posted, read a 2xx, set `syncedToServer = true`, and the server held nothing. *Nothing anywhere said
+so* -- not in the app, not in the server's log.
+
+*It is known upstream and was abandoned.* `thrillfall/nextcloud-gpodder#81` carries the identical
+diagnosis from a user hitting it on Acast at 612 characters, and the maintainer's reply --
+"`Ooooooooooohhhhhh. Thanks!. Well increase the length then`" -- is from 2022. 3.17.0 still creates
+the column at 500. Only `gpodder_subscriptions.url` was ever widened, which is precisely why
+*subscribing* to such a feed works and marking its episodes played does not. Finding that comment
+was worth more than the hour it would have taken to reason it out alone, and it is the second time
+on this project that reading the server's issue tracker beat reasoning from its source.
+
+*Two fixes, in two repositories, and only one of them is Podsilo's.* The server half is a schema
+correction in the author's Ansible `cloud` role -- widen the three columns to 1000, re-asserted on
+every run so an app update that recreates the column at 500 is corrected rather than quietly
+resuming the loss.
+
+*I got half of that wrong, and the author caught it before it shipped.* I also rebuilt the two unique
+indexes over a 500-character prefix first, reasoning that InnoDB caps an index key at 3072 bytes and
+a full utf8mb4 `VARCHAR(1000)` is 4000. The reasoning is real and the conclusion did not follow. The
+author tested it on `mariadb:10.11` -- the version `carcosa` runs -- and the statements are *a
+no-op*: at that point the columns still _are_ 500, so the prefixes normalise away and
+`SHOW CREATE TABLE` comes back byte-identical. Worse, the widen they were supposed to enable needs
+no help at all, because MariaDB has implemented an over-cap unique index as a hash over the whole
+value since 10.4 and converts it in place.
+
+The lesson is specific rather than "`test more`". I copied `Version0006`'s *statements* while
+reading it as a sequence, and it is not one: Doctrine emits an index against the final schema, not
+in written order, which is why the subscriptions table really does end up `(url(500), user_id)` and
+mine would not have. Copying a migration's output is not the same as copying a migration. The bit I
+could have checked cheaply -- does `SHOW CREATE TABLE` differ afterwards -- I did not, because the
+statements *looked* like they did something.
+
+*The Podsilo half is the one that generalises.* The author asked for the app to say when the server
+did not take the state, which is a better request than the one I would have built: my first instinct
+was a length check against 500, and that is a client hardcoding a server constant that the same
+change was about to make wrong. Verifying instead -- "`did what I sent come back?`" -- asks the
+question that actually matters and survives the fix.
+
+*It costs no extra request, which is the only reason it is worth doing on every pass.* The server
+selects `WHERE timestamp_epoch > :since` on the *client-authored* timestamp inside each action --
+the value this device wrote. So for our own rows the comparison is between two numbers on the same
+clock, and anything we sent whose `actionedAt` is later than the `since` we asked for must come back
+if the server kept it. The pull that already follows the push in the same pass is the proof.
+
+*The asymmetry was designed in rather than discovered.* A device whose clock runs behind the
+server's fails the `askedSince` test and is simply not checked, so skew can only ever silence this,
+never make it report a loss that did not happen. Same for the truncating backend -- a non-strict
+MySQL stores the first 500 characters rather than refusing the row, and the action comes back keyed
+by its `guid`, which still matches. Both have a test, because both are the ways a check like this
+turns into a boy who cried wolf.
+
+*What is not done, deliberately:* the rows are not put back in the outbox. Re-sending the same
+oversized URL fails identically for ever, so a retrying outbox would be a permanent stuck count and a
+permanent repeat of the same log entry. The entry names the repair instead -- S4's _Send this
+device's state to Nextcloud_, once the column can hold them.
+
+*Verified:* `:core:sync` ktlintCheck, detekt and test green -- 84 tests, 7 of them new. The Ansible
+change is `yamllint --strict` and `ansible-lint --profile production` clean.
+
+*Since corrected on the other side:* the author proved the `ALTER`s against a faithful copy of the
+table on `mariadb:10.11` -- a 516-character insert raises the 1406 the app swallows, the three
+``MODIFY``s make the same insert succeed, and repeating it still raises 1062, so the uniqueness
+constraint is intact rather than traded away. That is the half of this that is now demonstrated
+rather than argued.
+
+*Still unverified, and worth stating plainly:* the Podsilo check
+has been proven against fakes and not against an instance that actually drops an action;
+`opodsync`, the test server in `.devcontainer`, *cannot* reproduce the bug at all, because SQLite
+ignores a declared `VARCHAR` width. The honest end-to-end proof is: apply the role, force-push the
+affected podcast's decisions, and confirm they appear in RePod.
+
+*Toolchain note for the next session:* this ran on the WSL2 host rather than in the dev container,
+which has no JDK and no Android SDK, so `./gradlew test` cannot run there as written. A Temurin 17
+in a scratch directory was enough for the pure-JVM modules, which is all this change touches. The
+Android modules were not built. Run the full `ktlintCheck detekt test` in the container before
+taking the green above as the whole story.

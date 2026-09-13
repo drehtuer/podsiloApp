@@ -6631,3 +6631,33 @@ which has no JDK and no Android SDK, so `./gradlew test` cannot run there as wri
 in a scratch directory was enough for the pure-JVM modules, which is all this change touches. The
 Android modules were not built. Run the full `ktlintCheck detekt test` in the container before
 taking the green above as the whole story.
+
+
+== 2026-09-13 (later) — CI never ran detekt, and its own header said it did
+
+*Attempted:* run `detekt` over `main`, and add it to CI if it was missing.
+
+*It was missing, and the way it was missing is the interesting part.* `ci.yml`'s header comment has
+always read "`Eight checks in one job, in this order: yamllint, shellcheck, asciidoctor, ktlint,
+detekt, Android lint, the Tier 1 unit tests, then both APK builds`". Seven of those eight had a step.
+The only Gradle invocations in the file were `ktlintCheck`, `lint`, `coverage` and
+`assembleDebug assembleRelease`.
+
+So CLAUDE.md §12 asked every task to pass `./gradlew ktlintCheck detekt test`, and the badge that
+looked like it enforced that answered a different question. A project-wide detekt regression could
+have reached `main` green at any point. Nothing is known to have slipped through -- a full
+`--rerun-tasks` over all twelve modules is clean -- but that is luck plus the per-module runs done by
+hand, not the pipeline.
+
+*Worth noticing:* this was found by reading the workflow to answer "`did CI already cover the thing I
+could not run locally?`", which is a question worth asking before leaning on CI rather than after.
+The answer was no, and the honest version of the previous session's summary depended on knowing it.
+
+*The cost argument is one-sided,* which is why this is a step rather than a backlog entry. detekt
+runs without type resolution, so it resolves no dependency and compiles nothing: six seconds for
+every module, forced, against ten minutes for the test step it sits above. There was never a
+performance reason for the omission; it looks like a step that was described and then not written.
+
+*Verified:* `./gradlew detekt --rerun-tasks` on `main` -- twelve tasks executed, zero findings. The
+first run reported `UP-TO-DATE` for everything from this session's earlier caches, which is not a
+verification of anything; `--rerun-tasks` is what makes the green mean something.

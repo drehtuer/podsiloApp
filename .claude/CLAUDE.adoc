@@ -828,6 +828,13 @@ older build persisted in WorkManager's database can be cancelled on start.
 * *Nextcloud GPodder deviates from the original gpodder.net API.* Verify against the actual
 `nextcloud-gpodder` implementation rather than gpodder.net documentation. Notably, not every
 gpodder.net endpoint exists (e.g. parts of the Devices API).
+* *A 2xx from `episode_action/create` is not proof the server kept anything.* `nextcloud-gpodder`
+stores an action's `podcast`, `episode` and `guid` in 500-character columns and *silently discards*
+one that does not fit -- `EpisodeActionSaver` catches the DbalException, checks only for a
+unique-constraint violation, and falls out of the `catch`; the controller answers 200 regardless.
+Paid per-subscriber feeds (Supercast, Acast) sign their enclosure URLs and exceed it. The pass
+verifies this now and files an S8 entry when an action does not come back
+(`decisions/0029`); do not remove that check on the grounds that the server "`returned success`".
 * *Filenames are the whole UX.* The author sees these files in someone else's player, not in our UI.
 A mangled name or a wrong tag is a user-visible bug of the same severity as a failed download.
 * *Truncate UTF-8 by bytes, not characters,* and account for the extension and collision suffix

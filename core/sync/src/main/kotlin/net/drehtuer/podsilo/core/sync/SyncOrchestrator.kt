@@ -8,6 +8,7 @@ import net.drehtuer.podsilo.core.model.EpisodeLedgerRow
 import net.drehtuer.podsilo.core.model.Feed
 import net.drehtuer.podsilo.core.model.SyncOutcome
 import net.drehtuer.podsilo.core.model.SyncState
+import net.drehtuer.podsilo.core.model.episodeKey
 import net.drehtuer.podsilo.core.model.port.EpisodeAction
 import net.drehtuer.podsilo.core.model.port.EpisodeLedgerRepository
 import net.drehtuer.podsilo.core.model.port.FeedRepository
@@ -84,6 +85,21 @@ private fun <T> List<Pair<T, List<EpisodeAction>>>.chunkedByActionCount(
     return chunks
 }
 
+/** `actionedAt` is millis; every timestamp the GPodder API compares is seconds. */
+private const val MILLIS_PER_SECOND = 1000L
+
+/**
+ * The outcome of one outbox drain: the failure that stopped it, if any, and **the rows the server
+ * answered 2xx for**.
+ *
+ * The second half exists because a 2xx is not proof the server kept anything — see
+ * [SyncOrchestrator.reportActionsTheServerDidNotKeep], which is the only caller that needs it.
+ */
+private data class PushResult(
+    val failure: SyncOutcome?,
+    val accepted: List<EpisodeLedgerRow>,
+)
+
 /**
  * The one place a [GpodderFailure] becomes words a person reads. Short noun phrases rather than
  * sentences, so the two contexts that need them — a failed pass and a failed push — can each supply
@@ -148,11 +164,13 @@ class SyncOrchestrator(
     suspend fun sync(): SyncOutcome =
         guarded {
             pullSubscriptions()
-            val pushFailure = pushUnsyncedLedgerRows()
-            if (pushFailure != null) {
-                pushFailure
+            val push = pushUnsyncedLedgerRows()
+            if (push.failure != null) {
+                push.failure
             } else {
-                pullAndReconcileEpisodeActions()
+                // The pull is handed what the push just sent, because the pull's own answer is what
+                // proves the server kept it -- see [reportActionsTheServerDidNotKeep].
+                pullAndReconcileEpisodeActions(pushed = push.accepted)
                 SyncOutcome.Success
             }
         }
@@ -191,7 +209,7 @@ class SyncOrchestrator(
     suspend fun forcePush(): SyncOutcome =
         guarded {
             val rows = episodeLedgerRepository.observe(LedgerFilter(state = LedgerFilterState.ALL)).first()
-            pushRows(rows) ?: SyncOutcome.Success
+            pushRows(rows).failure ?: SyncOutcome.Success
         }
 
     /**
@@ -297,8 +315,8 @@ class SyncOrchestrator(
         feedRepository.replaceAll(feeds)
     }
 
-    /** Returns the failing [SyncOutcome] on a failed push, or `null` if there was nothing to push or it succeeded. */
-    private suspend fun pushUnsyncedLedgerRows(): SyncOutcome? = pushRows(episodeLedgerRepository.getUnsynced())
+    /** Drains the outbox; [PushResult.failure] is `null` when there was nothing to push or it succeeded. */
+    private suspend fun pushUnsyncedLedgerRows(): PushResult = pushRows(episodeLedgerRepository.getUnsynced())
 
     /**
      * Posts [rows] in chunks, marking each chunk synced only on its own confirmed 2xx.
@@ -314,7 +332,7 @@ class SyncOrchestrator(
      * really were accepted) and everything after stays unsynced for the next pass. Partial progress
      * is the correct outcome of a partial success, and the outbox is what makes it safe to resume.
      */
-    private suspend fun pushRows(rows: List<EpisodeLedgerRow>): SyncOutcome? {
+    private suspend fun pushRows(rows: List<EpisodeLedgerRow>): PushResult {
         // One row can produce more than one action -- a completed download emits both `DOWNLOAD` and
         // `PLAY` (`decisions/0023`) -- so the row and its actions are kept paired: the actions
         // are what gets posted, the rows are what gets marked synced.
@@ -324,40 +342,46 @@ class SyncOrchestrator(
                 .filter { (_, actions) -> actions.isNotEmpty() }
         var remaining = outbox.size
         var failure: Throwable? = null
+        val accepted = mutableListOf<EpisodeLedgerRow>()
         for (chunk in outbox.chunkedByActionCount(MAX_ACTIONS_PER_REQUEST)) {
             failure = gpodderClient.postEpisodeActions(chunk.flatMap { it.second }).exceptionOrNull()
             if (failure != null) break
             episodeLedgerRepository.markSynced(chunk.map { it.first.episodeKey })
+            accepted += chunk.map { it.first }
             remaining -= chunk.size
         }
 
-        return failure?.let {
-            // Named separately from the generic sync failure because the reassurance is the point:
-            // nothing was lost, the remaining rows are still unsynced, and the next pass sends them.
-            // The cause is still named, so an expired app password does not read as a network blip.
-            record(
-                message =
-                    buildString {
-                        append("$remaining decision(s) could not be sent to Nextcloud")
-                        it.reasonOrNull()?.let { cause -> append(": ").append(cause) }
-                        append(". They are kept here and will be sent again.")
-                    },
-                failure = it,
-            )
-            val why = it.message ?: "failed to push episode actions"
-            // The rows survive either way -- `syncedToServer` is still false. What differs is
-            // whether WorkManager should keep asking: a revoked app password will keep being
-            // revoked, and backing off against it just delays the log entry that explains it.
-            if (it.retryable()) SyncOutcome.Retry(why) else SyncOutcome.Failure(why)
-        }
+        val outcome =
+            failure?.let {
+                // Named separately from the generic sync failure because the reassurance is the
+                // point: nothing was lost, the remaining rows are still unsynced, and the next pass
+                // sends them. The cause is still named, so an expired app password does not read as
+                // a network blip.
+                record(
+                    message =
+                        buildString {
+                            append("$remaining decision(s) could not be sent to Nextcloud")
+                            it.reasonOrNull()?.let { cause -> append(": ").append(cause) }
+                            append(". They are kept here and will be sent again.")
+                        },
+                    failure = it,
+                )
+                val why = it.message ?: "failed to push episode actions"
+                // The rows survive either way -- `syncedToServer` is still false. What differs is
+                // whether WorkManager should keep asking: a revoked app password will keep being
+                // revoked, and backing off against it just delays the log entry that explains it.
+                if (it.retryable()) SyncOutcome.Retry(why) else SyncOutcome.Failure(why)
+            }
+        return PushResult(failure = outcome, accepted = accepted)
     }
 
-    private suspend fun pullAndReconcileEpisodeActions(since: Long? = null) {
+    private suspend fun pullAndReconcileEpisodeActions(
+        since: Long? = null,
+        pushed: List<EpisodeLedgerRow> = emptyList(),
+    ) {
         val syncState = syncStateRepository.get()
-        val page =
-            gpodderClient
-                .fetchEpisodeActions(since = since ?: syncState.lastEpisodeActionSyncTs.rewound())
-                .getOrThrow()
+        val askedSince = since ?: syncState.lastEpisodeActionSyncTs.rewound()
+        val page = gpodderClient.fetchEpisodeActions(since = askedSince).getOrThrow()
         val localLedger =
             episodeLedgerRepository
                 .observe(LedgerFilter(state = LedgerFilterState.ALL))
@@ -366,5 +390,74 @@ class SyncOrchestrator(
 
         reconcile(localLedger, page.actions, clock).forEach { row -> episodeLedgerRepository.upsert(row) }
         syncStateRepository.save(SyncState(page.timestamp, syncState.deviceId))
+        // Last, so a write here cannot cost the pass state that is already correct.
+        reportActionsTheServerDidNotKeep(pushed, page.actions, askedSince)
+    }
+
+    /**
+     * **A 2xx from `episode_action/create` is not proof the server kept anything**, and this is what
+     * notices when it did not.
+     *
+     * `nextcloud-gpodder` stores an action's `podcast`, `episode` and `guid` in fixed-width columns
+     * — 500 characters as of 3.17.0 — and an action whose values do not fit is *silently
+     * discarded*: `EpisodeActionSaver::saveEpisodeActions` catches the DbalException the oversized
+     * insert raises, asks whether it was a unique-constraint violation, and falls out of the catch
+     * with no rethrow and no log when it was not. `EpisodeActionController::create` then answers
+     * `200 {"timestamp": ...}` whatever happened. So this device marks the row synced, the server
+     * holds nothing, and the episode stays new in RePod and AntennaPod for ever — which is the one
+     * failure CLAUDE.md section 11 calls the app's central job to prevent, arriving with no error
+     * anywhere to read. Found against the author's own instance on 2026-09-13, on Supercast feeds
+     * whose per-subscriber signed enclosure URLs run 516–517 characters
+     * (`thrillfall/nextcloud-gpodder#81`, accepted upstream in 2022 and never fixed).
+     *
+     * **The proof costs no extra request, and that is the reason it is here rather than beside the
+     * push.** The pull that follows in the same pass selects `WHERE timestamp_epoch > :since` on the
+     * *client-authored* timestamp inside each action — the very value this device put there. So
+     * for our own rows the comparison is between two numbers in the same clock, and any row we sent
+     * whose `actionedAt` is later than the `since` we asked for **must** come back if the server
+     * kept it. One that does not come back was dropped.
+     *
+     * The asymmetry is deliberate in the safe direction: a device whose clock runs behind the
+     * server's simply fails the `askedSince` test and is not checked, so skew can only ever silence
+     * this, never make it cry wolf. Rows are **not** un-marked — re-sending the same oversized URL
+     * fails identically for ever — so the entry names the repair instead.
+     */
+    private suspend fun reportActionsTheServerDidNotKeep(
+        pushed: List<EpisodeLedgerRow>,
+        returned: List<EpisodeAction>,
+        askedSince: Long,
+    ) {
+        if (pushed.isEmpty()) return
+        val returnedKeys = returned.mapTo(mutableSetOf()) { episodeKey(it.guid, it.episode) }
+        val dropped =
+            pushed.filter { row ->
+                row.actionedAt / MILLIS_PER_SECOND > askedSince && row.episodeKey !in returnedKeys
+            }
+
+        // Grouped by feed, because the cause is a property of the feed rather than of the episode:
+        // one podcast's URLs are all too long or none of them are, and 22 identical rows would bury
+        // the log the entry is meant to explain.
+        dropped.groupBy { it.feedUrl }.forEach { (feedUrl, rows) ->
+            logRepository.record(
+                NewLogEntry(
+                    category = LogCategory.SYNC,
+                    feedUrl = feedUrl,
+                    message =
+                        "Nextcloud accepted ${rows.size} decision(s) for this podcast but did not " +
+                            "keep them. They hold on this device; the episodes stay new in your " +
+                            "other clients.",
+                    // No URL, per `UI.adoc` section 11 -- and these are the feeds whose enclosure
+                    // URLs carry a subscriber token, which is not a thing to write into a log.
+                    detail =
+                        "Not returned by the pull that followed the push. The known cause is " +
+                            "nextcloud-gpodder discarding an episode action whose URLs exceed its " +
+                            "fixed-width columns while still answering 200 " +
+                            "(thrillfall/nextcloud-gpodder#81); longest enclosure URL here is " +
+                            "${rows.maxOf { it.enclosureUrl.length }} characters. Once the server " +
+                            "can store them, re-send with Settings > Send this device's state to " +
+                            "Nextcloud.",
+                ),
+            )
+        }
     }
 }

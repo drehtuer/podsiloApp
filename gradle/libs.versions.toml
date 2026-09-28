@@ -41,10 +41,10 @@
 # to the gradle ecosystem. Bumping it is a manual, occasional job.
 [versions]
 agp = "9.4.0"
-kotlin = "2.4.10"
+kotlin = "2.4.20"
 room = "2.8.4"
 datastore = "1.2.1"
-ksp = "2.3.11"
+ksp = "2.3.12"
 work = "2.11.2"
 documentfile = "1.1.0"
 hilt = "2.60.1"

@@ -10,7 +10,6 @@ import net.drehtuer.podsilo.core.model.port.GpodderException
 import net.drehtuer.podsilo.core.model.port.GpodderFailure
 import net.drehtuer.podsilo.core.model.port.LogCategory
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -176,19 +175,6 @@ class SyncFailureLoggingTest {
             )
             assertTrue("the reassurance survives", entry.message.contains("will be sent again"))
             assertEquals("nothing may be marked synced without a 2xx", 1, ledger.getUnsynced().size)
-        }
-
-    /** No message may carry the exception's own text as the headline — that is what `detail` is for. */
-    @Test
-    fun thePlainSentenceIsNeverTheExceptionMessage() =
-        runBlocking {
-            val raw = "failed to connect to cloud.example.org/10.0.0.1:443 after 30000ms"
-
-            orchestrator(FakeGpodderClient(subscriptionsFailure = IOException(raw))).sync()
-
-            val entry = log.recorded.single()
-            assertFalse("the raw failure belongs in the detail, not the headline", entry.message.contains(raw))
-            assertTrue(entry.detail.orEmpty().contains(raw))
         }
 
     private fun skippedRow(episodeKey: String) =

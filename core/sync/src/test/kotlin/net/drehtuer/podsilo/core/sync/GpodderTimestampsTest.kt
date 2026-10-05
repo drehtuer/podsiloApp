@@ -55,17 +55,10 @@ class GpodderTimestampsTest {
     }
 
     @Test
-    fun `a malformed timestamp parses to null rather than throwing`() {
-        assertNull(parseGpodderTimestamp("not a timestamp"))
-    }
-
-    @Test
-    fun `a date without a time component parses to null`() {
-        assertNull(parseGpodderTimestamp("2026-07-14"))
-    }
-
-    @Test
-    fun `an empty string parses to null`() {
-        assertNull(parseGpodderTimestamp(""))
+    fun `malformed timestamps parse to null rather than throwing`() {
+        // A date without a time component is not "midnight" -- it is not the documented shape.
+        listOf("not a timestamp", "2026-07-14", "").forEach { raw ->
+            assertNull("'$raw'", parseGpodderTimestamp(raw))
+        }
     }
 }

@@ -3,14 +3,12 @@
 package net.drehtuer.podsilo.core.sync
 
 import kotlinx.coroutines.runBlocking
-import net.drehtuer.podsilo.core.model.EpisodeLedgerRow
 import net.drehtuer.podsilo.core.model.LedgerState
 import net.drehtuer.podsilo.core.model.SyncState
 import net.drehtuer.podsilo.core.model.port.EpisodeAction
 import net.drehtuer.podsilo.core.model.port.EpisodeActionPage
 import net.drehtuer.podsilo.core.model.port.EpisodeActionType
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Clock
 import java.time.Instant
@@ -127,49 +125,5 @@ class CursorOverlapTest {
             ).sync()
 
             assertEquals(serverTimestamp, syncState.current.lastEpisodeActionSyncTs)
-        }
-
-    /**
-     * Re-delivery is the price of the overlap, so it has to be free. Reconciliation is idempotent
-     * against a terminal local state, which is what makes a day of replayed actions cost nothing but
-     * the bytes.
-     */
-    @Test
-    fun `a replayed action against a terminal row writes nothing`() =
-        runBlocking {
-            val ledger = FakeEpisodeLedgerRepository()
-            ledger.upsert(
-                EpisodeLedgerRow(
-                    episodeKey = "guid-1",
-                    feedUrl = "https://example.com/feed.xml",
-                    enclosureUrl = "https://example.com/ep.mp3",
-                    state = LedgerState.DOWNLOADED,
-                    actionedAt = 0L,
-                    syncedToServer = true,
-                    attempts = 0,
-                    lastError = null,
-                    writtenFileName = "20260714_Episode.mp3",
-                ),
-            )
-
-            SyncOrchestrator(
-                FakeFeedRepository(),
-                ledger,
-                FakeSyncStateRepository(SyncState(1_000L, "device-a")),
-                FakeGpodderClient(
-                    episodeActionsPage =
-                        EpisodeActionPage(listOf(playedAt("2026-08-14T09:00:00+00:00")), timestamp = 2_000L),
-                ),
-                RecordingLogRepository(),
-                fixedClock,
-            ).sync()
-
-            // Unchanged in every field the replay could have touched — the fake has no write log, and
-            // "the row is exactly what it was" is the property that actually matters anyway.
-            val row = ledger.allRows.single()
-            assertEquals(LedgerState.DOWNLOADED, row.state)
-            assertEquals(0L, row.actionedAt)
-            assertEquals("20260714_Episode.mp3", row.writtenFileName)
-            assertTrue("and it must not be re-queued for pushing", row.syncedToServer)
         }
 }

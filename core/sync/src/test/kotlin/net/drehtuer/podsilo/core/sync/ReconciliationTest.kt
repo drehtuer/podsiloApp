@@ -85,34 +85,24 @@ class ReconciliationTest {
         assertEquals(LedgerState.HANDLED_REMOTELY, result.single().state)
     }
 
+    /**
+     * The idempotent terminal states, against every action type that would otherwise mark an episode
+     * handled. Also what makes replays of our own echoed-back actions harmless: the wire format
+     * carries no device id, so the terminal-state rule is the whole defence (`architecture.adoc` §6).
+     */
     @Test
-    fun `a locally downloaded episode is never revisited by a later remote action -- idempotent terminal state`() {
-        val local =
-            mapOf(
-                "guid-123" to localRow("guid-123", LedgerState.DOWNLOADED, writtenFileName = "20260714_Episode.mp3"),
-            )
+    fun `a terminal local state is never revisited by any remote action`() {
+        val terminal = listOf(LedgerState.DOWNLOADED, LedgerState.SKIPPED, LedgerState.HANDLED_REMOTELY)
+        val handling = listOf(EpisodeActionType.DOWNLOAD, EpisodeActionType.PLAY, EpisodeActionType.DELETE)
+        for (state in terminal) {
+            for (type in handling) {
+                val local = mapOf("guid-123" to localRow("guid-123", state, writtenFileName = "20260714_Episode.mp3"))
 
-        val result = reconcile(local, listOf(action()), fixedClock)
+                val result = reconcile(local, listOf(action(action = type)), fixedClock)
 
-        assertTrue("a terminal local state must not be touched", result.isEmpty())
-    }
-
-    @Test
-    fun `a locally skipped episode is never revisited either`() {
-        val local = mapOf("guid-123" to localRow("guid-123", LedgerState.SKIPPED))
-
-        val result = reconcile(local, listOf(action(action = EpisodeActionType.DELETE)), fixedClock)
-
-        assertTrue(result.isEmpty())
-    }
-
-    @Test
-    fun `replaying our own already-handled-remotely action is a no-op`() {
-        val local = mapOf("guid-123" to localRow("guid-123", LedgerState.HANDLED_REMOTELY))
-
-        val result = reconcile(local, listOf(action()), fixedClock)
-
-        assertTrue(result.isEmpty())
+                assertTrue("local $state must not be touched by remote $type", result.isEmpty())
+            }
+        }
     }
 
     @Test

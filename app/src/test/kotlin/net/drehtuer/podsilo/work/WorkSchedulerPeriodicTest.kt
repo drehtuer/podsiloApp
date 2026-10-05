@@ -14,6 +14,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import java.util.concurrent.TimeUnit
 
 /**
  * The one thing `decisions/0026` has to be true for: **nothing syncs on a timer.**
@@ -82,9 +83,21 @@ class WorkSchedulerPeriodicTest {
     fun `an interval below WorkManager's floor is clamped rather than silently ignored`() {
         scheduler.schedulePeriodicWork(1)
 
-        assertEquals(
-            listOf(WorkInfo.State.ENQUEUED),
-            infosFor(FeedRefreshWorker.PERIODIC_WORK_NAME).map { it.state },
-        )
+        val refresh = infosFor(FeedRefreshWorker.PERIODIC_WORK_NAME).single()
+        assertEquals(WorkInfo.State.ENQUEUED, refresh.state)
+        assertEquals(TimeUnit.MINUTES.toMillis(15), refresh.periodicityInfo?.repeatIntervalMillis)
+    }
+
+    /** UPDATE, not a second schedule: changing the interval re-times the one job that exists. */
+    @Test
+    fun `rescheduling with a new interval re-times the existing feed refresh`() {
+        scheduler.schedulePeriodicWork(240)
+        val first = infosFor(FeedRefreshWorker.PERIODIC_WORK_NAME).single()
+
+        scheduler.schedulePeriodicWork(60)
+
+        val after = infosFor(FeedRefreshWorker.PERIODIC_WORK_NAME).single()
+        assertEquals("the same job, updated in place", first.id, after.id)
+        assertEquals(TimeUnit.MINUTES.toMillis(60), after.periodicityInfo?.repeatIntervalMillis)
     }
 }

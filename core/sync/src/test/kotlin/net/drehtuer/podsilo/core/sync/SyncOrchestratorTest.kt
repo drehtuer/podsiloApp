@@ -317,7 +317,8 @@ class SyncOrchestratorTest {
     fun `an empty subscription list empties the local mirror without touching the ledger`() =
         runBlocking {
             val feedRepository = FakeFeedRepository(initial = listOf(feed("https://example.com/feed.xml")))
-            val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(downloadedRow().copy(syncedToServer = true)))
+            val decided = downloadedRow().copy(syncedToServer = true)
+            val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(decided))
 
             val outcome = orchestratorOf(feedRepository, ledgerRepository, gpodderClient = subscribedTo()).sync()
 

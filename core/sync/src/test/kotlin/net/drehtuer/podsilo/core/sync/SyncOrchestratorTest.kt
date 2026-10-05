@@ -246,6 +246,9 @@ class SyncOrchestratorTest {
 
             assertTrue(outcome is SyncOutcome.Retry)
             assertEquals(1, feedRepository.current.size) // untouched
+            // Order of operations: the pass stops at its first step, before the outbox or the pull.
+            assertEquals(0, gpodderClient.postEpisodeActionsCallCount)
+            assertTrue(gpodderClient.fetchEpisodeActionsSinceValues.isEmpty())
         }
 
     @Test
@@ -279,5 +282,60 @@ class SyncOrchestratorTest {
             // client-authored timestamps while handing back its own clock, so an action authored
             // before our last pass would otherwise be invisible for ever. 500 - 86 400 floors at 0.
             assertEquals(listOf(0L), gpodderClient.fetchEpisodeActionsSinceValues)
+        }
+
+    private fun subscribedTo(vararg urls: String) =
+        FakeGpodderClient(subscriptions = SubscriptionDelta(add = urls.toList(), remove = emptyList(), timestamp = 0L))
+
+    /**
+     * CLAUDE.md §7 item 7, across three passes: the feed disappears from the server, then comes back.
+     * The ledger is keyed by episode, not by feed, so the decision made before the unsubscribe must
+     * survive both -- re-subscribing must not re-open the back catalogue, and nothing is pushed or
+     * queued along the way.
+     */
+    @Test
+    fun `a feed removed and re-added on the server keeps its ledger and is not re-downloaded`() =
+        runBlocking {
+            val feedUrl = "https://example.com/feed.xml"
+            val decided = downloadedRow().copy(syncedToServer = true)
+            val feedRepository = FakeFeedRepository()
+            val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(decided))
+            val syncStateRepository = FakeSyncStateRepository()
+            val passes = listOf(subscribedTo(feedUrl), subscribedTo(), subscribedTo(feedUrl))
+            val feedsAfterEachPass =
+                passes.map { client ->
+                    orchestratorOf(feedRepository, ledgerRepository, syncStateRepository, client).sync()
+                    feedRepository.current.map { it.url }
+                }
+
+            assertEquals(listOf(listOf(feedUrl), emptyList(), listOf(feedUrl)), feedsAfterEachPass)
+            assertEquals("the ledger outlives the subscription", listOf(decided), ledgerRepository.allRows)
+            assertTrue(passes.all { it.postEpisodeActionsCallCount == 0 })
+        }
+
+    @Test
+    fun `an empty subscription list empties the local mirror without touching the ledger`() =
+        runBlocking {
+            val feedRepository = FakeFeedRepository(initial = listOf(feed("https://example.com/feed.xml")))
+            val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(downloadedRow().copy(syncedToServer = true)))
+
+            val outcome = orchestratorOf(feedRepository, ledgerRepository, gpodderClient = subscribedTo()).sync()
+
+            assertEquals(SyncOutcome.Success, outcome)
+            assertTrue(feedRepository.current.isEmpty())
+            assertEquals(1, ledgerRepository.allRows.size)
+        }
+
+    @Test
+    fun `a url listed twice in add is mirrored once`() =
+        runBlocking {
+            val feedRepository = FakeFeedRepository()
+
+            orchestratorOf(
+                feedRepository,
+                gpodderClient = subscribedTo("https://example.com/feed.xml", "https://example.com/feed.xml"),
+            ).sync()
+
+            assertEquals(1, feedRepository.current.size)
         }
 }

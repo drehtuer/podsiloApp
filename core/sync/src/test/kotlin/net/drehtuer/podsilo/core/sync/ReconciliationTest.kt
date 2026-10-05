@@ -184,7 +184,7 @@ class ReconciliationTest {
                         syncedToServer = false,
                         attempts = 1,
                         lastError = "timeout",
-                        writtenFileName = null,
+                        writtenFileName = "20260714_Episode.mp3",
                         durationSeconds = 1800,
                     ),
             )
@@ -192,5 +192,79 @@ class ReconciliationTest {
         val result = reconcile(local, listOf(action()), fixedClock)
 
         assertEquals(1800, result.single().durationSeconds)
+        // Retry idempotency (CLAUDE.md §6): the name already chosen must survive the override.
+        assertEquals("20260714_Episode.mp3", result.single().writtenFileName)
+    }
+
+    /** The other half of the duplicate rule: list order must not let an older action win. */
+    @Test
+    fun `duplicate remote actions resolve to the latest timestamp even when the newer one comes first`() {
+        val newer = action(episode = "https://example.com/ep-new.mp3", timestamp = "2026-07-15T09:00:00")
+        val older = action(episode = "https://example.com/ep-old.mp3", timestamp = "2026-07-14T09:00:00")
+
+        val result = reconcile(emptyMap(), listOf(newer, older), fixedClock)
+
+        assertEquals("https://example.com/ep-new.mp3", result.single().enclosureUrl)
+        assertEquals(Instant.parse("2026-07-15T09:00:00Z").toEpochMilli(), result.single().actionedAt)
+    }
+
+    /**
+     * Clock skew between clients shows up as timestamps in different offsets. The comparison is by
+     * instant, not by the string: `09:30+02:00` is 07:30Z and therefore *older* than `08:00Z`, though
+     * it reads later.
+     */
+    @Test
+    fun `duplicates in different offsets are ordered by instant, not by wall-clock text`() {
+        val laterLooking = action(episode = "https://example.com/ep-a.mp3", timestamp = "2026-07-14T09:30:00+02:00")
+        val actuallyLater = action(episode = "https://example.com/ep-b.mp3", timestamp = "2026-07-14T08:00:00Z")
+
+        val result = reconcile(emptyMap(), listOf(actuallyLater, laterLooking), fixedClock)
+
+        assertEquals("https://example.com/ep-b.mp3", result.single().enclosureUrl)
+    }
+
+    /**
+     * The complement of the guid-less CDN migration case: with a guid, the guid is the identity, so
+     * a changed enclosure URL is the *same* episode and a terminal local row stays untouched.
+     */
+    @Test
+    fun `a cdn migration with a stable guid is still the same episode`() {
+        val local = mapOf("guid-123" to localRow("guid-123", LedgerState.DOWNLOADED))
+        val migrated = action(guid = "guid-123", episode = "https://new-cdn.example.com/ep.mp3")
+
+        assertTrue(reconcile(local, listOf(migrated), fixedClock).isEmpty())
+    }
+
+    /**
+     * Only the three terminal states are protected. Local in-flight states lose to a remote handled
+     * action -- CLAUDE.md §7's "remote DOWNLOAD/PLAY arriving for a locally queued episode", extended
+     * to every non-terminal state the download pipeline can leave behind.
+     */
+    @Test
+    fun `in-flight local states are overridden by a remote handled action`() {
+        for (state in listOf(LedgerState.QUEUED, LedgerState.DOWNLOADING, LedgerState.ERROR)) {
+            for (type in listOf(EpisodeActionType.DOWNLOAD, EpisodeActionType.PLAY, EpisodeActionType.DELETE)) {
+                val local = mapOf("guid-123" to localRow("guid-123", state))
+
+                val result = reconcile(local, listOf(action(action = type)), fixedClock)
+
+                assertEquals("local $state, remote $type", LedgerState.HANDLED_REMOTELY, result.single().state)
+                assertTrue("a remote decision is not ours to push back", result.single().syncedToServer)
+            }
+        }
+    }
+
+    @Test
+    fun `actions for several episodes in one batch each produce their own row`() {
+        val actions =
+            listOf(
+                action(guid = "guid-a", episode = "https://example.com/a.mp3"),
+                action(guid = null, episode = "https://example.com/b.mp3"),
+                action(guid = "guid-a", episode = "https://example.com/a.mp3", timestamp = "2026-07-13T09:00:00"),
+            )
+
+        val result = reconcile(emptyMap(), actions, fixedClock)
+
+        assertEquals(setOf("guid-a", "https://example.com/b.mp3"), result.map { it.episodeKey }.toSet())
     }
 }

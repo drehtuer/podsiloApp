@@ -29,6 +29,11 @@ class LogRedactionTest {
                 "GET https://cloud.example.org/f?token=abc123&x=1" to
                     "GET https://cloud.example.org/f?token=<redacted>&x=1",
                 "https://host/e.mp3?app_password=abc123" to "https://host/e.mp3?app_password=<redacted>",
+                // The scheme word is consumed with the token, whichever scheme and casing it is.
+                "AUTHORIZATION: bearer eyJhbGciOiJIUzI1NiJ9" to "AUTHORIZATION: <redacted>",
+                "Authorization: Digest username=podsilo" to "Authorization: <redacted>",
+                "https://host/f.xml?apikey=k1&api_key=k2&passwd=p" to
+                    "https://host/f.xml?apikey=<redacted>&api_key=<redacted>&passwd=<redacted>",
             )
 
         cases.forEach { (raw, expected) ->

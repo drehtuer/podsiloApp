@@ -80,4 +80,14 @@ class TemplateTokenTest {
     fun `empty template yields no tokens`() {
         assertEquals(emptyList<TemplateToken>(), tokenizeTemplate(""))
     }
+
+    @Test
+    fun `an empty date pattern is kept as an empty pattern, not dropped`() {
+        assertEquals(listOf(TemplateToken.Variable("date", "")), tokenizeTemplate("{date:}"))
+    }
+
+    @Test
+    fun `an unclosed brace is literal text`() {
+        assertEquals(listOf(TemplateToken.Literal("{title")), tokenizeTemplate("{title"))
+    }
 }

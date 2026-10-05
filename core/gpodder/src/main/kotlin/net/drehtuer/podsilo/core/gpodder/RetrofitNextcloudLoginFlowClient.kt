@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import net.drehtuer.podsilo.core.model.port.LoginFlow
 import net.drehtuer.podsilo.core.model.port.LoginFlowException
@@ -315,6 +316,18 @@ private suspend fun <T> runCatchingRequest(
             // The message is kept: it names the host that actually failed, which is the one piece of
             // information the user needs when it is not the host they typed.
             Result.failure(LoginFlowException(LoginFlowFailure.UNREACHABLE, io.message ?: "could not reach the server"))
+        } catch (
+            @Suppress("SwallowedException") unreadable: SerializationException,
+        ) {
+            // A 2xx whose body is not a Login Flow answer: a catch-all web server, a captive portal,
+            // a blog answering every POST with its front page. The same mistake as a 404 at `start`
+            // — the address is not a Nextcloud. Before this branch it escaped the Result entirely
+            // (`SerializationException` is an IllegalArgumentException, not an IOException) and
+            // crashed the caller's coroutine.
+            //
+            // The message is fixed on purpose, and the exception's own is dropped: kotlinx.serialization
+            // quotes the JSON input, and a poll body carries the app password.
+            Result.failure(LoginFlowException(LoginFlowFailure.NOT_NEXTCLOUD, "the answer was not a Nextcloud login"))
         }
     }
 

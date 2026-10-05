@@ -2,6 +2,7 @@
 
 package net.drehtuer.podsilo.ui.activity
 
+import app.cash.turbine.test
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -83,6 +84,8 @@ class ActivityViewModelTest {
     private val folder = MutableStateFlow(FolderState.GRANTED)
     private val scheduler = RecordingActivityScheduler()
     private val clock = Clock.fixed(Instant.parse("2026-08-09T12:00:00Z"), ZoneOffset.UTC)
+    private val connectivity = MutableStateFlow(Connectivity(online = true, metered = false))
+    private var syncRequests = 0
 
     /** Held rather than built inline, so a decision withdrawn on this screen is observable (#90). */
     private val triageLedger = FakeActivityLedger()
@@ -97,14 +100,14 @@ class ActivityViewModelTest {
                 settingsRepository = settings,
                 connectivityMonitor =
                     object : ConnectivityMonitor {
-                        override fun observe() = MutableStateFlow(Connectivity(online = true, metered = false))
+                        override fun observe() = connectivity
                     },
                 folderStatus = { folder },
                 workMonitor = { work },
                 syncStatus = { MutableStateFlow(null) },
                 scheduler = scheduler,
                 triageWriter = TriageWriter(triageLedger, clock, {}),
-                syncNow = { },
+                syncNow = { syncRequests++ },
                 clock = clock,
                 // Issue #91: the projection is dispatched off the main thread in production; a test
                 // has to name a dispatcher it controls, or its emissions race the test scheduler.
@@ -339,16 +342,165 @@ class ActivityViewModelTest {
             assertEquals(clock.millis(), settings.deliveredClearedAt.value)
             assertEquals(clock.millis(), list.deliveredSince)
         }
+
+    @Test
+    fun `Sync now asks for a pass when online and says so`() =
+        runTest {
+            val vm = viewModel()
+            runCurrent()
+
+            vm.effect.test {
+                vm.onEvent(ActivityEvent.SyncNowClicked)
+
+                assertEquals(ActivityEffect.ShowMessage("Syncing…"), awaitItem())
+            }
+            assertEquals(1, syncRequests)
+        }
+
+    /** UI.adoc §12.10: an offline tap says so instead of enqueueing a pass that waits for a network. */
+    @Test
+    fun `Sync now offline says there is no network and asks for nothing`() =
+        runTest {
+            connectivity.value = Connectivity(online = false, metered = false)
+            val vm = viewModel()
+            runCurrent()
+
+            vm.effect.test {
+                vm.onEvent(ActivityEvent.SyncNowClicked)
+
+                assertEquals(ActivityEffect.ShowMessage("No network connection"), awaitItem())
+            }
+            assertEquals(0, syncRequests)
+            assertEquals(BlockedReason.OFFLINE, vm.state.value.sync.blockedReason)
+            assertFalse(vm.state.value.sync.canSyncNow)
+        }
+
+    @Test
+    fun `without an account the sync row is blocked as not configured, even online`() =
+        runTest {
+            settings.account.value = null
+            val vm = viewModel()
+            runCurrent()
+
+            assertEquals(BlockedReason.NOT_CONFIGURED, vm.state.value.sync.blockedReason)
+            assertFalse(vm.state.value.sync.canSyncNow)
+        }
+
+    @Test
+    fun `a queued row offline waits for a network, not for Wi-Fi`() =
+        runTest {
+            connectivity.value = Connectivity(online = false, metered = false)
+            list.inFlight.value = listOf(EpisodeListItem(episode("q"), row("q", LedgerState.QUEUED)))
+            val vm = viewModel()
+            runCurrent()
+
+            assertEquals(
+                WaitReason.NETWORK,
+                vm.state.value.queued
+                    .single()
+                    .reason,
+            )
+        }
+
+    /**
+     * A retry is a re-decision (`decisions/0012` §3): a fresh `QUEUED` row with the attempt count
+     * and error cleared, then the download is enqueued — not merely the work restarted.
+     */
+    @Test
+    fun `retry re-queues through the triage writer and then enqueues the download`() =
+        runTest {
+            episodes.seed(episode("f"))
+            triageLedger.upsert(row("f", LedgerState.ERROR).copy(attempts = 3, lastError = "connection reset"))
+            val vm = viewModel()
+            runCurrent()
+
+            vm.onEvent(ActivityEvent.RetryClicked("f"))
+            runCurrent()
+
+            val written = triageLedger.get("f")
+            assertEquals(LedgerState.QUEUED, written?.state)
+            assertEquals(0, written?.attempts)
+            assertNull(written?.lastError)
+            assertEquals(listOf("f" to false), scheduler.enqueued)
+        }
+
+    @Test
+    fun `mark as played from a failed row writes SKIPPED and enqueues nothing`() =
+        runTest {
+            episodes.seed(episode("f"))
+            triageLedger.upsert(row("f", LedgerState.ERROR))
+            val vm = viewModel()
+            runCurrent()
+
+            vm.onEvent(ActivityEvent.MarkAsPlayedClicked("f"))
+            runCurrent()
+
+            assertEquals(LedgerState.SKIPPED, triageLedger.get("f")?.state)
+            assertTrue(scheduler.enqueued.isEmpty())
+        }
+
+    /** An episode pruned from the cache since the row was drawn: nothing to write, nothing to crash. */
+    @Test
+    fun `an action on an episode that no longer exists does nothing`() =
+        runTest {
+            val vm = viewModel()
+            runCurrent()
+
+            vm.onEvent(ActivityEvent.RetryClicked("gone"))
+            vm.onEvent(ActivityEvent.MarkAsPlayedClicked("gone"))
+            vm.onEvent(ActivityEvent.MarkAsUnplayedClicked("gone"))
+            runCurrent()
+
+            assertNull(triageLedger.get("gone"))
+            assertTrue(scheduler.enqueued.isEmpty())
+        }
+
+    @Test
+    fun `cancel goes to the scheduler and nowhere else`() =
+        runTest {
+            val vm = viewModel()
+            runCurrent()
+
+            vm.onEvent(ActivityEvent.CancelClicked("q"))
+
+            assertEquals(listOf("q"), scheduler.cancellations)
+        }
+
+    @Test
+    fun `navigation events become the matching effects`() =
+        runTest {
+            val vm = viewModel()
+            runCurrent()
+
+            vm.effect.test {
+                vm.onEvent(ActivityEvent.RowClicked(FEED_URL, "e1"))
+                assertEquals(ActivityEffect.OpenEpisodeDetail("e1"), awaitItem())
+
+                vm.onEvent(ActivityEvent.DetailsClicked("e1"))
+                assertEquals(ActivityEffect.OpenErrorLog, awaitItem())
+
+                vm.onEvent(ActivityEvent.ErrorLogClicked)
+                assertEquals(ActivityEffect.OpenErrorLog, awaitItem())
+
+                vm.onEvent(ActivityEvent.PausedBannerActionClicked)
+                assertEquals(ActivityEffect.ChooseFolder, awaitItem())
+            }
+        }
 }
 
 /** Records what the screen asked to be scheduled — never runs anything. */
 private class RecordingActivityScheduler : EpisodeScheduler {
     val cancellations = mutableListOf<String>()
 
+    /** Episode key and the `userRequested` flag, per enqueue. */
+    val enqueued = mutableListOf<Pair<String, Boolean>>()
+
     override fun enqueueDownload(
         episodeKey: String,
         userRequested: Boolean,
-    ) = Unit
+    ) {
+        enqueued += episodeKey to userRequested
+    }
 
     override fun cancelDownload(episodeKey: String) {
         cancellations += episodeKey
@@ -451,6 +603,7 @@ private class FakeActivityFeedRepository : FeedRepository {
 /** Only the two settings S7 reads carry behaviour; the rest would fail loudly if it started using them. */
 private class FakeActivitySettingsRepository : SettingsRepository {
     val deliveredClearedAt = MutableStateFlow(0L)
+    val account = MutableStateFlow<NextcloudAccount?>(NextcloudAccount("https://cloud.example.org", "podsilo"))
 
     override fun observeNaming(): Flow<NamingSettings> = MutableStateFlow(NamingSettings())
 
@@ -486,8 +639,7 @@ private class FakeActivitySettingsRepository : SettingsRepository {
 
     override suspend fun setMarkOldOlderThan(value: OlderThan) = error("not used by S7")
 
-    override fun observeNextcloudAccount(): Flow<NextcloudAccount?> =
-        MutableStateFlow(NextcloudAccount("https://cloud.example.org", "podsilo"))
+    override fun observeNextcloudAccount(): Flow<NextcloudAccount?> = account
 
     override suspend fun nextcloudCredentials(): NextcloudCredentials? = null
 

@@ -119,4 +119,46 @@ class OutboundEpisodeActionTest {
             assertTrue("state=$state", row(state).toOutboundActions().isEmpty())
         }
     }
+
+    /**
+     * *Mark as unplayed* (`decisions/0024`): the API cannot delete an action, so the withdrawal is a
+     * `PLAY` at position 0 with the duration left in `total` -- the shape every gpodder client
+     * already writes for *unread*.
+     */
+    @Test
+    fun `unplayed emits a single PLAY at position 0, keeping the duration`() {
+        listOf(1_800 to 1_800, null to 1).forEach { (duration, expectedTotal) ->
+            val action = row(LedgerState.UNPLAYED, durationSeconds = duration).toOutboundActions().single()
+
+            assertEquals(EpisodeActionType.PLAY, action.action)
+            assertEquals(0, action.started)
+            assertEquals("duration=$duration", 0, action.position)
+            assertEquals("duration=$duration", expectedTotal, action.total)
+            assertEquals("2026-07-14T09:00:00", action.timestamp)
+        }
+    }
+
+    /**
+     * What we send has to mean, to a second Podsilo device reading it back, what we meant: a download
+     * or a skip is *handled*, an unplayed mark is not. Asserted through the real reading rule rather
+     * than restated, so the two halves cannot drift apart.
+     */
+    @Test
+    fun `every outbound action reads back through our own rule as intended`() {
+        val expected =
+            mapOf(
+                LedgerState.DOWNLOADED to true,
+                LedgerState.SKIPPED to true,
+                LedgerState.UNPLAYED to false,
+            )
+        for ((state, handled) in expected) {
+            for (duration in listOf(null, 1_800)) {
+                val actions = row(state, durationSeconds = duration).toOutboundActions()
+                assertTrue(
+                    "$state/duration=$duration",
+                    actions.isNotEmpty() && actions.all { it.meansHandledElsewhere() == handled },
+                )
+            }
+        }
+    }
 }

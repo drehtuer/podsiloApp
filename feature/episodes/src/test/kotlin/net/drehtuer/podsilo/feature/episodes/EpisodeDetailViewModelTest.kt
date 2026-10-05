@@ -299,6 +299,97 @@ class EpisodeDetailViewModelTest {
                 assertNull(awaitItem())
             }
         }
+
+    /** decisions/0024 at S3: a state rather than a deletion, announced, and the sheet closes. */
+    @Test
+    fun `marking unplayed writes UNPLAYED, says so and closes the sheet`() =
+        runTest {
+            episodes.seed(sampleEpisode())
+            ledger.seedRow(ledgerRow("e1", state = LedgerState.SKIPPED))
+            val viewModel = viewModel()
+
+            viewModel.effect.test {
+                viewModel.onEvent(EpisodeDetailEvent.Triage(EpisodeUiAction.MARK_AS_UNPLAYED))
+
+                assertEquals(EpisodeDetailEffect.ShowMessage(SnackbarText.MarkedUnplayed(1)), awaitItem())
+                assertEquals(EpisodeDetailEffect.Close, awaitItem())
+            }
+            assertEquals(
+                LedgerState.UNPLAYED,
+                ledger.writes
+                    .single()
+                    .single()
+                    .state,
+            )
+            assertTrue(scheduler.downloads.isEmpty())
+        }
+
+    @Test
+    fun `cancelling cancels the work, writes nothing, and closes the sheet`() =
+        runTest {
+            episodes.seed(sampleEpisode())
+            ledger.seedRow(ledgerRow("e1", state = LedgerState.QUEUED))
+            val viewModel = viewModel()
+
+            viewModel.effect.test {
+                viewModel.onEvent(EpisodeDetailEvent.Triage(EpisodeUiAction.CANCEL))
+
+                assertEquals(EpisodeDetailEffect.Close, awaitItem())
+            }
+            assertEquals(listOf("e1"), scheduler.cancellations)
+            assertTrue(ledger.writes.isEmpty())
+        }
+
+    /**
+     * The two link actions are not decisions, so neither closes the sheet — and copying is not
+     * opening: both used to emit `OpenUrl`, so *Copy episode link* launched a browser.
+     */
+    @Test
+    fun `the link actions leave the sheet open, and copy copies rather than opening`() =
+        runTest {
+            episodes.seed(sampleEpisode(link = "https://example.org/episodes/1"))
+            val viewModel = viewModel()
+
+            viewModel.effect.test {
+                viewModel.onEvent(EpisodeDetailEvent.Triage(EpisodeUiAction.COPY_LINK))
+                assertEquals(EpisodeDetailEffect.CopyLink("https://example.org/episodes/1"), awaitItem())
+                assertEquals(EpisodeDetailEffect.ShowMessage(SnackbarText.LinkCopied), awaitItem())
+
+                viewModel.onEvent(EpisodeDetailEvent.Triage(EpisodeUiAction.OPEN_IN_BROWSER))
+                assertEquals(EpisodeDetailEffect.OpenUrl("https://example.org/episodes/1"), awaitItem())
+
+                expectNoEvents()
+            }
+            assertTrue(ledger.writes.isEmpty())
+        }
+
+    @Test
+    fun `back and Error details are navigation the host performs`() =
+        runTest {
+            val viewModel = viewModel()
+
+            viewModel.effect.test {
+                viewModel.onEvent(EpisodeDetailEvent.Dismissed)
+                assertEquals(EpisodeDetailEffect.Close, awaitItem())
+
+                viewModel.onEvent(EpisodeDetailEvent.ErrorDetailsClicked)
+                assertEquals(EpisodeDetailEffect.OpenErrorLog, awaitItem())
+            }
+        }
+
+    @Test
+    fun `a decision on an episode pruned under the sheet writes nothing and emits nothing`() =
+        runTest {
+            val viewModel = viewModel(episodeKey = "gone")
+
+            viewModel.effect.test {
+                viewModel.onEvent(EpisodeDetailEvent.Triage(EpisodeUiAction.DOWNLOAD))
+
+                expectNoEvents()
+            }
+            assertTrue(ledger.writes.isEmpty())
+            assertTrue(scheduler.downloads.isEmpty())
+        }
 }
 
 /** Consumes emissions until [predicate] holds, so a test does not depend on the emission count. */

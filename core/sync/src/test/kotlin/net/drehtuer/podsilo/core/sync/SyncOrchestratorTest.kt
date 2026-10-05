@@ -64,20 +64,6 @@ class SyncOrchestratorTest {
         )
 
     @Test
-    fun `a full pass with nothing to do returns success and advances the sync timestamp`() =
-        runBlocking {
-            val syncStateRepository = FakeSyncStateRepository()
-            val page = EpisodeActionPage(emptyList(), timestamp = 999L)
-            val gpodderClient = FakeGpodderClient(episodeActionsPage = page)
-            val orchestrator = orchestratorOf(syncStateRepository = syncStateRepository, gpodderClient = gpodderClient)
-
-            val outcome = orchestrator.sync()
-
-            assertEquals(SyncOutcome.Success, outcome)
-            assertEquals(999L, syncStateRepository.current.lastEpisodeActionSyncTs)
-        }
-
-    @Test
     fun `subscriptions are pulled as a full current set, preserving already-known feed metadata`() =
         runBlocking {
             val existingFeed =
@@ -168,19 +154,6 @@ class SyncOrchestratorTest {
         }
 
     @Test
-    fun `a failed push returns Retry and leaves the row unsynced -- no re-download bug`() =
-        runBlocking {
-            val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(downloadedRow()))
-            val gpodderClient = FakeGpodderClient(postResult = Result.failure(IOException("connection reset")))
-
-            val outcome = orchestratorOf(ledgerRepository = ledgerRepository, gpodderClient = gpodderClient).sync()
-
-            assertTrue(outcome is SyncOutcome.Retry)
-            val message = "row must remain unsynced so it is retried, not silently dropped"
-            assertFalse(message, ledgerRepository.allRows.single().syncedToServer)
-        }
-
-    @Test
     fun `a failed push does not advance past reconciliation -- order of operations stops early`() =
         runBlocking {
             val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(downloadedRow()))
@@ -240,27 +213,27 @@ class SyncOrchestratorTest {
             assertEquals(1, succeedingClient.postEpisodeActionsCallCount)
         }
 
+    /**
+     * CLAUDE.md §7 item 8: successful download + POST + remote echo of our own action. The pass
+     * pushes the row, and the pull that follows hands back exactly what we sent -- `DOWNLOAD` and the
+     * ended `PLAY` (`decisions/0023`). Because the day of cursor overlap re-delivers our own
+     * actions on every pass, this replay has to be free: nothing about the row may change.
+     */
     @Test
-    fun `a remote echo of our own already-synced download is a no-op, not a duplicate download trigger`() =
+    fun `a remote echo of our own download is a no-op, not a duplicate download trigger`() =
         runBlocking {
-            val syncedRow = downloadedRow().copy(syncedToServer = true)
-            val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(syncedRow))
-            val echoAction =
-                EpisodeAction(
-                    podcast = syncedRow.feedUrl,
-                    episode = syncedRow.enclosureUrl,
-                    guid = syncedRow.guid,
-                    action = EpisodeActionType.DOWNLOAD,
-                    timestamp = "2026-07-14T09:00:00",
-                )
-            val page = EpisodeActionPage(listOf(echoAction), timestamp = 1L)
+            val row = downloadedRow()
+            val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(row))
+            val page = EpisodeActionPage(row.toOutboundActions(), timestamp = 1L)
             val gpodderClient = FakeGpodderClient(episodeActionsPage = page)
 
-            orchestratorOf(ledgerRepository = ledgerRepository, gpodderClient = gpodderClient).sync()
+            val outcome = orchestratorOf(ledgerRepository = ledgerRepository, gpodderClient = gpodderClient).sync()
 
-            val row = ledgerRepository.allRows.single()
-            assertEquals(LedgerState.DOWNLOADED, row.state) // unchanged -- terminal, never becomes HANDLED_REMOTELY
-            assertEquals("20260714_Episode.mp3", row.writtenFileName) // untouched
+            assertEquals(SyncOutcome.Success, outcome)
+            assertEquals(1, gpodderClient.postEpisodeActionsCallCount)
+            // Unchanged in every field the echo could have touched: still terminal (never
+            // HANDLED_REMOTELY), same timestamp, same written name, and not re-queued for pushing.
+            assertEquals(row.copy(syncedToServer = true), ledgerRepository.allRows.single())
         }
 
     @Test
@@ -273,16 +246,9 @@ class SyncOrchestratorTest {
 
             assertTrue(outcome is SyncOutcome.Retry)
             assertEquals(1, feedRepository.current.size) // untouched
-        }
-
-    @Test
-    fun `an unexpected non-IO exception yields Failure, not Retry`() =
-        runBlocking {
-            val gpodderClient = FakeGpodderClient(subscriptionsFailure = IllegalStateException("malformed response"))
-
-            val outcome = orchestratorOf(gpodderClient = gpodderClient).sync()
-
-            assertTrue(outcome is SyncOutcome.Failure)
+            // Order of operations: the pass stops at its first step, before the outbox or the pull.
+            assertEquals(0, gpodderClient.postEpisodeActionsCallCount)
+            assertTrue(gpodderClient.fetchEpisodeActionsSinceValues.isEmpty())
         }
 
     @Test
@@ -309,13 +275,68 @@ class SyncOrchestratorTest {
             ).sync()
 
             assertEquals(LedgerState.HANDLED_REMOTELY, ledgerRepository.allRows.single().state)
+            // What is *persisted* is the server's value, verbatim and un-rewound (CLAUDE.md §11).
             assertEquals(999L, syncStateRepository.current.lastEpisodeActionSyncTs)
             assertEquals("device-a", syncStateRepository.current.deviceId) // device id preserved, not regenerated
             // The cursor is rewound a day before it is sent (issue #60, step 4): the server filters on
             // client-authored timestamps while handing back its own clock, so an action authored
             // before our last pass would otherwise be invisible for ever. 500 - 86 400 floors at 0.
             assertEquals(listOf(0L), gpodderClient.fetchEpisodeActionsSinceValues)
-            // What is *persisted* is still the server's value, verbatim and un-rewound (CLAUDE.md §11).
-            assertEquals(999L, syncStateRepository.current.lastEpisodeActionSyncTs)
+        }
+
+    private fun subscribedTo(vararg urls: String) =
+        FakeGpodderClient(subscriptions = SubscriptionDelta(add = urls.toList(), remove = emptyList(), timestamp = 0L))
+
+    /**
+     * CLAUDE.md §7 item 7, across three passes: the feed disappears from the server, then comes back.
+     * The ledger is keyed by episode, not by feed, so the decision made before the unsubscribe must
+     * survive both -- re-subscribing must not re-open the back catalogue, and nothing is pushed or
+     * queued along the way.
+     */
+    @Test
+    fun `a feed removed and re-added on the server keeps its ledger and is not re-downloaded`() =
+        runBlocking {
+            val feedUrl = "https://example.com/feed.xml"
+            val decided = downloadedRow().copy(syncedToServer = true)
+            val feedRepository = FakeFeedRepository()
+            val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(decided))
+            val syncStateRepository = FakeSyncStateRepository()
+            val passes = listOf(subscribedTo(feedUrl), subscribedTo(), subscribedTo(feedUrl))
+            val feedsAfterEachPass =
+                passes.map { client ->
+                    orchestratorOf(feedRepository, ledgerRepository, syncStateRepository, client).sync()
+                    feedRepository.current.map { it.url }
+                }
+
+            assertEquals(listOf(listOf(feedUrl), emptyList(), listOf(feedUrl)), feedsAfterEachPass)
+            assertEquals("the ledger outlives the subscription", listOf(decided), ledgerRepository.allRows)
+            assertTrue(passes.all { it.postEpisodeActionsCallCount == 0 })
+        }
+
+    @Test
+    fun `an empty subscription list empties the local mirror without touching the ledger`() =
+        runBlocking {
+            val feedRepository = FakeFeedRepository(initial = listOf(feed("https://example.com/feed.xml")))
+            val decided = downloadedRow().copy(syncedToServer = true)
+            val ledgerRepository = FakeEpisodeLedgerRepository(initial = listOf(decided))
+
+            val outcome = orchestratorOf(feedRepository, ledgerRepository, gpodderClient = subscribedTo()).sync()
+
+            assertEquals(SyncOutcome.Success, outcome)
+            assertTrue(feedRepository.current.isEmpty())
+            assertEquals(1, ledgerRepository.allRows.size)
+        }
+
+    @Test
+    fun `a url listed twice in add is mirrored once`() =
+        runBlocking {
+            val feedRepository = FakeFeedRepository()
+
+            orchestratorOf(
+                feedRepository,
+                gpodderClient = subscribedTo("https://example.com/feed.xml", "https://example.com/feed.xml"),
+            ).sync()
+
+            assertEquals(1, feedRepository.current.size)
         }
 }

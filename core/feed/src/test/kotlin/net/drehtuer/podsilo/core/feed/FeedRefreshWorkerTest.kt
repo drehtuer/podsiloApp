@@ -4,9 +4,11 @@ package net.drehtuer.podsilo.core.feed
 
 import android.content.Context
 import androidx.work.ListenableWorker
+import androidx.work.NetworkType
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import androidx.work.testing.TestListenableWorkerBuilder
+import androidx.work.workDataOf
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -21,8 +23,11 @@ import net.drehtuer.podsilo.core.model.port.LogCategory
 import net.drehtuer.podsilo.core.model.port.OlderThan
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -90,7 +95,10 @@ class FeedRefreshWorkerTest {
         httpLastModified = null,
     )
 
-    private fun buildWorker(): FeedRefreshWorker {
+    private fun buildWorker(
+        feedUrl: String? = null,
+        runAttemptCount: Int = 0,
+    ): FeedRefreshWorker {
         val factory =
             object : WorkerFactory() {
                 override fun createWorker(
@@ -121,7 +129,11 @@ class FeedRefreshWorkerTest {
                             ),
                     )
             }
-        return TestListenableWorkerBuilder<FeedRefreshWorker>(context).setWorkerFactory(factory).build()
+        return TestListenableWorkerBuilder<FeedRefreshWorker>(context)
+            .setWorkerFactory(factory)
+            .setRunAttemptCount(runAttemptCount)
+            .apply { feedUrl?.let { setInputData(workDataOf(FeedRefreshWorker.KEY_FEED_URL to it)) } }
+            .build()
     }
 
     @Test
@@ -310,6 +322,98 @@ class FeedRefreshWorkerTest {
             assertTrue("the sentence the user reads comes first", entry.message.contains("could not be loaded"))
             assertTrue("the technical half is separate", entry.detail.orEmpty().contains("503"))
         }
+
+    @Test
+    fun `a feed server that drops the connection is logged and retried`() =
+        runBlocking {
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+            feeds.seed(feed())
+
+            val result = buildWorker().doWork()
+
+            assertEquals(ListenableWorker.Result.retry(), result)
+            val entry = log.recorded.single()
+            assertEquals(LogCategory.FEED, entry.category)
+            assertTrue(entry.message.contains("did not respond"))
+            assertTrue("the cached episodes stand", episodes.stored.isEmpty())
+        }
+
+    @Test
+    fun `out of attempts, a failing pass ends as success - the next scheduled pass tries again`() =
+        runBlocking {
+            // "Not now", not "never": a failure here would mark the unique work FAILED, and nothing
+            // is lost — episodes are a disposable cache (CLAUDE.md §5).
+            server.enqueue(MockResponse().setResponseCode(503))
+            feeds.seed(feed())
+
+            assertEquals(ListenableWorker.Result.success(), buildWorker(runAttemptCount = 3).doWork())
+        }
+
+    @Test
+    fun `a pass scoped to one feed fetches only that feed`() =
+        runBlocking {
+            // S2's pull-to-refresh is about the podcast on screen; refreshing every feed for it would
+            // make one pull cost a whole pass.
+            server.enqueue(MockResponse().setResponseCode(200).setBody(feedXml(listOf("Folge 1"))))
+            feeds.seed(feed("/other.xml"), feed("/pulled.xml"))
+
+            val result = buildWorker(feedUrl = feed("/pulled.xml").url).doWork()
+
+            assertEquals(ListenableWorker.Result.success(), result)
+            assertEquals(1, server.requestCount)
+            assertEquals("/pulled.xml", server.takeRequest().path)
+            assertEquals(setOf(feed("/pulled.xml").url), episodes.stored.keys)
+        }
+
+    @Test
+    fun `a scoped pass for a feed that has since been unsubscribed is a quiet success`() =
+        runBlocking {
+            // The subscription list is the server's (CLAUDE.md §1); the screen empties on the next sync.
+            feeds.seed(feed("/other.xml"))
+
+            val result = buildWorker(feedUrl = feed("/gone.xml").url).doWork()
+
+            assertEquals(ListenableWorker.Result.success(), result)
+            assertEquals(0, server.requestCount)
+            assertTrue(log.recorded.isEmpty())
+        }
+
+    @Test
+    fun `with the rule on but nothing old enough, nothing is written and no sync is asked for`() =
+        runBlocking {
+            // An empty refresh must not schedule work.
+            settings.markOldOlderThan = OlderThan.MONTH_3
+            server.enqueue(MockResponse().setResponseCode(200).setBody(feedXml(listOf("Folge 1"))))
+            feeds.seed(feed())
+
+            buildWorker().doWork()
+
+            assertEquals("the rule did run", 1, ledger.queriedScopes.size)
+            assertTrue(ledger.writes.isEmpty())
+            assertEquals(0, syncTrigger.requests)
+        }
+
+    @Test
+    fun `work requests carry their scope, need a network, and coalesce per feed`() {
+        val scoped = FeedRefreshWorker.request("https://example.org/feed.xml")
+
+        assertEquals("https://example.org/feed.xml", scoped.workSpec.input.getString(FeedRefreshWorker.KEY_FEED_URL))
+        val everything = FeedRefreshWorker.request().workSpec.input
+        assertNull("absent means all feeds", everything.getString(FeedRefreshWorker.KEY_FEED_URL))
+        assertEquals(NetworkType.CONNECTED, scoped.workSpec.constraints.requiredNetworkType)
+        assertEquals(
+            NetworkType.CONNECTED,
+            FeedRefreshWorker
+                .periodicRequest(60)
+                .workSpec.constraints.requiredNetworkType,
+        )
+        assertEquals(FeedRefreshWorker.UNIQUE_WORK_NAME, FeedRefreshWorker.uniqueWorkName(null))
+        assertNotEquals(
+            "two pulls on different feeds must not replace each other",
+            FeedRefreshWorker.uniqueWorkName("https://a.example/feed.xml"),
+            FeedRefreshWorker.uniqueWorkName("https://b.example/feed.xml"),
+        )
+    }
 
     private fun oldEpisode(
         key: String,

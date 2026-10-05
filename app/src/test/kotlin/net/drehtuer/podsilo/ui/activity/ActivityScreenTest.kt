@@ -2,6 +2,9 @@
 
 package net.drehtuer.podsilo.ui.activity
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -16,6 +19,7 @@ import net.drehtuer.podsilo.feature.episodes.DownloadProgress
 import net.drehtuer.podsilo.feature.episodes.EpisodeUi
 import net.drehtuer.podsilo.feature.episodes.FailureUi
 import net.drehtuer.podsilo.feature.episodes.FolderState
+import net.drehtuer.podsilo.feature.episodes.QueueStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -143,28 +147,6 @@ class ActivityScreenTest {
     }
 
     @Test
-    fun `recently downloaded shows the file and offers nothing that would make this a file manager`() {
-        render(
-            ActivityUiState(
-                recent =
-                    listOf(
-                        DeliveredUi(
-                            fileName = "20260630_Hafen-Kran-Kaffee.mp3",
-                            folderLabel = "Der Podcast",
-                            episodeKey = "e1",
-                            feedUrl = "https://example.org/feed.xml",
-                        ),
-                    ),
-            ),
-        )
-
-        compose.onNodeWithText("20260630_Hafen-Kran-Kaffee.mp3").assertIsDisplayed()
-        // README: Podsilo does not delete files, open them, or check whether they still exist.
-        compose.onAllNodes(hasText("Delete", substring = true)).assertCountEquals(0)
-        compose.onAllNodes(hasText("Open", substring = true)).assertCountEquals(0)
-    }
-
-    @Test
     fun `Sync now is disabled offline, with the reason on screen`() {
         render(
             ActivityUiState(
@@ -195,14 +177,16 @@ class ActivityScreenTest {
     }
 
     /**
-     * *Clear list* empties the delivered list and **must not read as deleting anything**.
+     * Recently downloaded shows what was written and nothing that would make S7 a file manager
+     * (README: Podsilo does not delete files, open them, or check whether they still exist).
      *
-     * The list is projected from `DOWNLOADED` ledger rows, which are the record that stops an
-     * episode being fetched again (CLAUDE.md §11) — so the label says "list", and the word "Delete"
-     * must stay absent from this screen for the same reason it always has.
+     * *Clear list* empties the delivered list and **must not read as deleting anything**: the list
+     * is projected from `DOWNLOADED` ledger rows, which are the record that stops an episode being
+     * fetched again (CLAUDE.md §11) — so the label says "list", and the word "Delete" must stay
+     * absent from this screen for the same reason it always has.
      */
     @Test
-    fun `clear list is offered and never called delete`() {
+    fun `recently downloaded shows the file, offers Clear list, and nothing that makes it a file manager`() {
         render(
             ActivityUiState(
                 recent =
@@ -217,10 +201,13 @@ class ActivityScreenTest {
             ),
         )
 
+        compose.onNodeWithText("20260630_Hafen-Kran-Kaffee.mp3").assertIsDisplayed()
+        compose.onAllNodes(hasText("Delete", substring = true)).assertCountEquals(0)
+        compose.onAllNodes(hasText("Open", substring = true)).assertCountEquals(0)
+
         compose.onNodeWithText("Clear list").performClick()
 
         assertTrue(events.contains(ActivityEvent.ClearDeliveredClicked))
-        compose.onAllNodes(hasText("Delete", substring = true)).assertCountEquals(0)
     }
 
     /** Nothing to clear, nothing to offer — an empty list must not show a button that does nothing. */
@@ -284,5 +271,82 @@ class ActivityScreenTest {
         )
 
         compose.onNode(hasText("Handled elsewhere", substring = true)).assertIsDisplayed()
+    }
+
+    /**
+     * The paused banner names its cause and offers the one fix for it. Every cause routes through the
+     * same event; which screen it opens is the host's business.
+     */
+    @Test
+    fun `a paused queue names its cause and offers the fix`() {
+        var status: QueueStatus by
+            mutableStateOf(QueueStatus.Paused(QueueStatus.PauseCause.FOLDER_NOT_CHOSEN, queuedCount = 2))
+        compose.setContent {
+            ActivityScreen(
+                state = ActivityUiState(queueStatus = status),
+                onEvent = { events += it },
+                onBack = {},
+                now = now,
+            )
+        }
+
+        compose.onNodeWithText("Downloads paused — no download folder chosen").assertIsDisplayed()
+        compose.onNodeWithText("Choose folder").performClick()
+        assertEquals(listOf(ActivityEvent.PausedBannerActionClicked), events)
+
+        status = QueueStatus.Paused(QueueStatus.PauseCause.FOLDER_REVOKED, queuedCount = 2)
+        compose.onNode(hasText("no longer available", substring = true)).assertIsDisplayed()
+        compose.onNodeWithText("Choose folder").assertIsDisplayed()
+
+        status = QueueStatus.Paused(QueueStatus.PauseCause.DISK_FULL, queuedCount = 2)
+        compose.onNodeWithText("Downloads paused — no space left").assertIsDisplayed()
+        compose.onNodeWithText("Free up space").assertIsDisplayed()
+    }
+
+    @Test
+    fun `a running queue shows no paused banner`() {
+        render(ActivityUiState(queueStatus = QueueStatus.Running))
+
+        compose.onAllNodes(hasText("Downloads paused", substring = true)).assertCountEquals(0)
+    }
+
+    @Test
+    fun `Sync now, the error log and a queued row's Cancel each fire their event`() {
+        render(
+            ActivityUiState(
+                queued = listOf(QueuedUi(episode(key = "q", ledgerState = LedgerState.QUEUED), WaitReason.FOLDER)),
+            ),
+        )
+
+        compose.onNodeWithText("waiting for a download folder").assertIsDisplayed()
+        compose.onNodeWithText("Sync now").performClick()
+        compose.onNodeWithContentDescription("Error log").performClick()
+        compose.onNodeWithText("Cancel").performClick()
+
+        assertEquals(
+            listOf(ActivityEvent.SyncNowClicked, ActivityEvent.ErrorLogClicked, ActivityEvent.CancelClicked("q")),
+            events,
+        )
+    }
+
+    @Test
+    fun `the sync line puts a blocking reason first and counts one action in the singular`() {
+        val synced = SyncUi(lastSyncAt = now.minusSeconds(600))
+
+        assertEquals(
+            "No Nextcloud connected · never synced",
+            SyncUi(blockedReason = BlockedReason.NOT_CONFIGURED).line(now),
+        )
+        assertEquals(
+            "No network connection · last 10 min ago · 1 action pending",
+            synced.copy(blockedReason = BlockedReason.OFFLINE, outboxDepth = 1).line(now),
+        )
+    }
+
+    @Test
+    fun `relative times stay coarse at every scale`() {
+        assertEquals("just now", relative(now.minusSeconds(30), now))
+        assertEquals("1 h ago", relative(now.minusSeconds(60 * 60), now))
+        assertEquals("3 d ago", relative(now.minusSeconds(3 * 24 * 60 * 60), now))
     }
 }

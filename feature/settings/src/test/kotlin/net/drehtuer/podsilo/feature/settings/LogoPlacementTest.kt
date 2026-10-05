@@ -2,6 +2,9 @@
 
 package net.drehtuer.podsilo.feature.settings
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -43,21 +46,20 @@ class LogoPlacementTest {
         // Deliberately not asserted by counting the word "podsilo": the account name Nextcloud hands
         // back can be anything, and `podsilo` is exactly what the confirmation test uses. The tag is
         // the only reliable way to ask this question.
-        compose.setContent { ConnectDialog(state = ConnectUiState(), onEvent = {}) }
+        var phase: ConnectUiState.Phase by mutableStateOf(ConnectUiState.Phase.Editing)
+        compose.setContent { ConnectDialog(state = ConnectUiState(phase = phase), onEvent = {}) }
 
-        marks().assertCountEquals(0)
-    }
-
-    @Test
-    fun `S5 has no mark while it waits for the browser either`() {
-        compose.setContent {
-            ConnectDialog(
-                state = ConnectUiState(phase = ConnectUiState.Phase.AwaitingAuthorization),
-                onEvent = {},
-            )
+        listOf(
+            ConnectUiState.Phase.Editing,
+            ConnectUiState.Phase.RequestingFlow,
+            ConnectUiState.Phase.AwaitingAuthorization,
+            ConnectUiState.Phase.VerifyingGpodderSync,
+            ConnectUiState.Phase.ConfirmingAccount("podsilo"),
+        ).forEach {
+            phase = it
+            compose.waitForIdle()
+            marks().assertCountEquals(0)
         }
-
-        marks().assertCountEquals(0)
     }
 
     @Test

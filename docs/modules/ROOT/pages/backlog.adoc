@@ -36,6 +36,18 @@ in `dev-environment.adoc` §6 and is entirely manual: run the set, grant the fol
 refresh, then re-run the instrumentation _without_ reinstalling. Automating it would mean a
 fixture account and a way to restore a grant, neither of which exists (2026-08-14).
 
+* *A local `UNPLAYED` can be overwritten by an older remote "ended" `PLAY`* -- found by reading
+`Reconciliation.kt` during the 2026-10-05 test audit, *not* reproduced in a test or on a server.
+`reconcile` drops every action that is not `meansHandledElsewhere()` _before_ comparing
+timestamps, and `UNPLAYED` is not in `TERMINAL_STATES`. So a page holding the skip's ended `PLAY`
+and the newer unread `PLAY` that _Mark as unplayed_ pushed lets the older one win, and the row
+becomes `HANDLED_REMOTELY`. `forcePull()` reaches it without pushing first, losing an unsent
+`UNPLAYED` outright; an ordinary pass plausibly reaches it too, because the cursor deliberately
+rewinds by a day. It is here and not fixed because it changes a sync conflict rule (CLAUDE.md §9:
+ask first). The likely shape of a fix -- let the newest action per key win _before_ asking whether
+it means handled, and protect an unsynced local row -- needs the author's ruling on what `UNPLAYED`
+should lose to.
+
 == Distribution readiness (audited 2026-08-04)
 
 Against https://developer.android.com/studio/publish[developer.android.com/studio/publish] and the

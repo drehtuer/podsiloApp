@@ -3,6 +3,7 @@
 package net.drehtuer.podsilo.feature.episodes
 
 import app.cash.turbine.test
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -15,7 +16,6 @@ import net.drehtuer.podsilo.core.model.port.NextcloudAccount
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -223,32 +223,6 @@ class PodcastListViewModelTest {
         }
 
     @Test
-    fun `the setup checklist disappears once Nextcloud and the folder are both set`() =
-        runTest {
-            folder.state = FolderState.GRANTED
-
-            viewModel().state.test {
-                assertNull(awaitItem().setup)
-            }
-        }
-
-    @Test
-    fun `a revoked folder grant brings the checklist back and pauses the queue`() =
-        runTest {
-            folder.state = FolderState.REVOKED
-
-            viewModel().state.test {
-                val state = awaitItem()
-                assertNotNull(state.setup)
-                assertEquals(FolderState.REVOKED, state.setup?.folderState)
-                assertEquals(
-                    QueueStatus.Paused(QueueStatus.PauseCause.FOLDER_REVOKED, queuedCount = 0),
-                    state.queueStatus,
-                )
-            }
-        }
-
-    @Test
     fun `refreshing offline reports it immediately instead of attempting anything`() =
         runTest {
             connectivity.online = false
@@ -263,16 +237,6 @@ class PodcastListViewModelTest {
             assertEquals("nor a sync pass — offline is a precondition, not a failure", 0, scheduler.syncs)
         }
 
-    @Test
-    fun `pull to refresh asks for every feed, not one`() =
-        runTest {
-            val viewModel = viewModel()
-
-            viewModel.onEvent(PodcastListEvent.PullToRefresh)
-
-            assertEquals(listOf<String?>(null), scheduler.refreshes)
-        }
-
     /**
      * Issue #60. `UI.adoc` §4 specifies a sync pass **and** a feed refresh, and only the second
      * one shipped — so the gesture fetched RSS and never touched the action log in either direction.
@@ -281,7 +245,7 @@ class PodcastListViewModelTest {
      * first would fetch the set of feeds the sync is about to replace.
      */
     @Test
-    fun `pull to refresh syncs before it refreshes the feeds`() =
+    fun `pull to refresh syncs, then refreshes every feed rather than one`() =
         runTest {
             val viewModel = viewModel()
 
@@ -289,6 +253,8 @@ class PodcastListViewModelTest {
 
             assertEquals(1, scheduler.syncs)
             assertEquals(listOf("sync", "refresh"), scheduler.order)
+            // `null` is "every feed": S1 refreshes the whole subscription list, S2 only its own.
+            assertEquals(listOf<String?>(null), scheduler.refreshes)
         }
 
     @Test
@@ -302,6 +268,185 @@ class PodcastListViewModelTest {
                 assertEquals(PodcastListEffect.OpenEpisodes("a"), awaitItem())
             }
             assertTrue(ledger.writes.isEmpty())
+        }
+
+    /** S1 owns no navigation (`UI.adoc` §B0.2): every route is an effect the host performs. */
+    @Test
+    fun `every app-bar and checklist route is an effect, and none decides anything`() =
+        runTest {
+            val routes =
+                mapOf(
+                    PodcastListEvent.ActivityClicked to PodcastListEffect.OpenActivity,
+                    PodcastListEvent.SettingsClicked to PodcastListEffect.OpenSettings,
+                    PodcastListEvent.ConnectNextcloudClicked to PodcastListEffect.OpenConnect,
+                    PodcastListEvent.ChooseFolderClicked to PodcastListEffect.ChooseFolder,
+                    PodcastListEvent.NamingClicked to PodcastListEffect.OpenNaming,
+                    PodcastListEvent.PausedBannerActionClicked to PodcastListEffect.ResolvePausedQueue,
+                )
+            val viewModel = viewModel()
+
+            viewModel.effect.test {
+                routes.forEach { (event, effect) ->
+                    viewModel.onEvent(event)
+                    assertEquals("event=$event", effect, awaitItem())
+                }
+                expectNoEvents()
+            }
+            assertTrue(ledger.writes.isEmpty())
+            assertTrue(scheduler.refreshes.isEmpty())
+        }
+
+    /**
+     * `activeDownloads` had a default of 0 and no assignment anywhere, so "n downloading" and the
+     * app-bar badge were both dead. Only *running* work counts: an `ERROR` row is in flight for S7
+     * but is emphatically not a download in progress (`UI.adoc` §12.5).
+     */
+    @Test
+    fun `running downloads are counted per feed and light the badge, failures are not`() =
+        runTest {
+            feeds.seed(
+                feed(url = FEED_URL, title = "Alpha", lastRefreshedAt = 1),
+                feed(url = "idle", title = "Bravo", lastRefreshedAt = 1),
+            )
+            episodes.seed(
+                episode(key = "q"),
+                episode(key = "d"),
+                episode(key = "x"),
+                episode(key = "undecided", feedUrl = "idle"),
+            )
+            ledger.seedRow(ledgerRow("q", state = LedgerState.QUEUED))
+            ledger.seedRow(ledgerRow("d", state = LedgerState.DOWNLOADING))
+            ledger.seedRow(ledgerRow("x", state = LedgerState.ERROR, lastError = "boom"))
+            val viewModel = viewModel()
+
+            viewModel.state.test {
+                viewModel.onEvent(PodcastListEvent.FilterChanged(PodcastFilter.ALL))
+                val state = awaitUntil { (it.content as? PodcastListUiState.Content.Feeds)?.feeds?.size == 2 }
+                val rows = (state.content as PodcastListUiState.Content.Feeds).feeds.associateBy { it.url }
+
+                assertEquals(2, rows.getValue(FEED_URL).activeDownloads)
+                assertEquals(0, rows.getValue("idle").activeDownloads)
+                assertTrue(state.activityBadge)
+            }
+        }
+
+    @Test
+    fun `nothing running leaves the badge dark`() =
+        runTest {
+            feeds.seed(feed(url = "a", title = "Alpha", lastRefreshedAt = 1))
+            episodes.seed(episode(key = "a1", feedUrl = "a"))
+            ledger.seedRow(ledgerRow("a1", state = LedgerState.DOWNLOADED))
+
+            viewModel().state.test {
+                assertFalse(awaitUntil { it.content is PodcastListUiState.Content.Feeds }.activityBadge)
+            }
+        }
+
+    /** The summary sums what is known; a never-fetched feed's unknown count is not a zero to add. */
+    @Test
+    fun `the total counts undecided episodes across fetched feeds only`() =
+        runTest {
+            feeds.seed(
+                feed(url = "a", title = "Alpha", lastRefreshedAt = 1),
+                feed(url = "b", title = "Bravo", lastRefreshedAt = 1),
+                feed(url = "never", title = "Never"),
+            )
+            episodes.seed(
+                episode(key = "a1", feedUrl = "a"),
+                episode(key = "a2", feedUrl = "a"),
+                episode(key = "b1", feedUrl = "b"),
+            )
+
+            viewModel().state.test {
+                assertEquals(3, awaitUntil { it.content is PodcastListUiState.Content.Feeds }.totalUndecided)
+            }
+        }
+
+    @Test
+    fun `losing the network is shown on the home screen`() =
+        runTest {
+            connectivity.online = false
+
+            viewModel().state.test {
+                assertTrue(awaitItem().isOffline)
+            }
+        }
+
+    /**
+     * S1's queue banner has only the folder grant to go on, so each grant state maps to exactly one
+     * queue state — and the checklist stays up until the app can actually complete a download.
+     */
+    @Test
+    fun `each folder grant state pauses or runs the queue, and holds the checklist open until granted`() =
+        runTest {
+            val expected =
+                mapOf(
+                    FolderState.GRANTED to QueueStatus.Running,
+                    FolderState.NOT_CHOSEN to
+                        QueueStatus.Paused(QueueStatus.PauseCause.FOLDER_NOT_CHOSEN, queuedCount = 0),
+                    FolderState.REVOKED to QueueStatus.Paused(QueueStatus.PauseCause.FOLDER_REVOKED, queuedCount = 0),
+                )
+            expected.forEach { (grant, queue) ->
+                folder.state = grant
+
+                viewModel().state.test {
+                    val state = awaitItem()
+                    assertEquals("grant=$grant", queue, state.queueStatus)
+                    if (grant == FolderState.GRANTED) {
+                        assertNull("grant=$grant", state.setup)
+                    } else {
+                        assertEquals("grant=$grant", grant, state.setup?.folderState)
+                    }
+                }
+            }
+        }
+
+    /**
+     * The other half of the frozen order: an explicit refresh is the one moment the list *may*
+     * reorder, because the user asked for it and is watching the indicator.
+     */
+    @Test
+    fun `a pull to refresh re-sorts the list once it finishes`() =
+        runTest {
+            feeds.seed(
+                feed(url = "a", title = "Alpha", lastRefreshedAt = 1),
+                feed(url = "b", title = "Bravo", lastRefreshedAt = 1),
+            )
+            episodes.seed(
+                episode(key = "a1", feedUrl = "a", pubDate = 9_000),
+                episode(key = "b1", feedUrl = "b", pubDate = 1_000),
+            )
+            val viewModel = viewModel()
+
+            viewModel.state.test {
+                viewModel.onEvent(PodcastListEvent.FilterChanged(PodcastFilter.ALL))
+                assertEquals(listOf("a", "b"), awaitUntilFeeds(PodcastFilter.ALL).map { it.url })
+
+                episodes.seed(episode(key = "b2", feedUrl = "b", pubDate = 99_000))
+                viewModel.onEvent(PodcastListEvent.PullToRefresh)
+
+                assertEquals(
+                    listOf("b", "a"),
+                    awaitUntil { state ->
+                        (state.content as? PodcastListUiState.Content.Feeds)?.feeds?.firstOrNull()?.url == "b"
+                    }.let { (it.content as PodcastListUiState.Content.Feeds).feeds.map { feed -> feed.url } },
+                )
+            }
+        }
+
+    @Test
+    fun `the indicator stays up for the whole of the refresh`() =
+        runTest {
+            scheduler.inFlightRefresh = CompletableDeferred()
+            val viewModel = viewModel()
+
+            viewModel.state.test {
+                viewModel.onEvent(PodcastListEvent.PullToRefresh)
+                awaitUntil { it.isRefreshing }
+
+                scheduler.completeRefresh()
+                awaitUntil { !it.isRefreshing }
+            }
         }
 }
 

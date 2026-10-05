@@ -55,11 +55,6 @@ class EpisodeImageParsingTest {
         assertEquals("https://example.org/podcast-cover.jpg", parse("episode_images.xml").metadata.imageUrl)
     }
 
-    @Test
-    fun `a feed with no episode images at all parses with null throughout`() {
-        parse("valid_minimal.xml").episodes.forEach { assertNull(it.imageUrl) }
-    }
-
     // --- cleartext artwork ---------------------------------------------------------------------
     //
     // Android blocks http:// at targetSdk 28+, and feeds still publish artwork that way. Upgrading
@@ -76,27 +71,17 @@ class EpisodeImageParsingTest {
     }
 
     @Test
-    fun `a cleartext episode image is requested over TLS instead`() {
-        val episodes = parse("cleartext_artwork.xml").episodes
+    fun `episode artwork is upgraded to TLS only when it was cleartext, whatever the scheme's case`() {
+        val byGuid = parse("cleartext_artwork.xml").episodes.associateBy { it.guid }
+        val expected =
+            mapOf(
+                "ep-cleartext" to "https://example.org/ep-cleartext.jpg",
+                "ep-uppercase" to "https://example.org/ep-uppercase.jpg",
+                // Already https: left exactly as published.
+                "ep-secure" to "https://example.org/ep-secure.jpg",
+            )
 
-        assertEquals(
-            "https://example.org/ep-cleartext.jpg",
-            episodes.single { it.guid == "ep-cleartext" }.imageUrl,
-        )
-    }
-
-    @Test
-    fun `an uppercase scheme is upgraded too`() {
-        val episodes = parse("cleartext_artwork.xml").episodes
-
-        assertEquals("https://example.org/ep-uppercase.jpg", episodes.single { it.guid == "ep-uppercase" }.imageUrl)
-    }
-
-    @Test
-    fun `an https image is left exactly as published`() {
-        val episodes = parse("cleartext_artwork.xml").episodes
-
-        assertEquals("https://example.org/ep-secure.jpg", episodes.single { it.guid == "ep-secure" }.imageUrl)
+        expected.forEach { (guid, url) -> assertEquals(guid, url, byGuid.getValue(guid).imageUrl) }
     }
 
     /**

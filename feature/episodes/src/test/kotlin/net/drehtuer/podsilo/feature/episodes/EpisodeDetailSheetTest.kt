@@ -183,20 +183,12 @@ class EpisodeDetailSheetTest {
      * author reported. A back affordance is the only way out now, and there is nothing to pull.
      */
     @Test
-    fun `the detail screen has a back affordance and cannot be pulled away`() {
+    fun `the detail screen's way out is a back affordance that emits Dismissed`() {
         render()
 
-        compose.onNodeWithContentDescription("Back").assertIsDisplayed()
-        // No sheet handle, and the content is not draggable off-screen.
-        compose.onAllNodes(hasText("Warum Hamburg immer regnet")).assertCountEquals(1)
-    }
+        compose.onNodeWithContentDescription("Back").assertIsDisplayed().performClick()
 
-    @Test
-    fun `back emits Dismissed so the host can pop the backstack`() {
-        render()
-
-        compose.onNodeWithContentDescription("Back").performClick()
-
-        assertTrue(events.contains(EpisodeDetailEvent.Dismissed))
+        // The host pops the backstack on this; there is no sheet left to drag away.
+        assertEquals(listOf(EpisodeDetailEvent.Dismissed), events)
     }
 }

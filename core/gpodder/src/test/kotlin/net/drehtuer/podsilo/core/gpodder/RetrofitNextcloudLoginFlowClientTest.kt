@@ -7,6 +7,7 @@ import net.drehtuer.podsilo.core.model.port.LoginFlow
 import net.drehtuer.podsilo.core.model.port.LoginFlowException
 import net.drehtuer.podsilo.core.model.port.LoginFlowFailure
 import net.drehtuer.podsilo.core.model.port.NextcloudCredentials
+import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -18,6 +19,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import javax.net.ssl.SSLHandshakeException
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 
@@ -84,11 +86,100 @@ class RetrofitNextcloudLoginFlowClientTest {
     @Test
     fun `an unreachable address is a network problem, not a wrong-server problem`() =
         runTest {
-            server.shutdown()
+            // Refused in-process rather than by a shut-down port, which some hosts drop instead of
+            // refusing — see ConnectionRefusingSocketFactory.
+            val refusing =
+                RetrofitNextcloudLoginFlowClient(
+                    httpClient = OkHttpClient.Builder().socketFactory(ConnectionRefusingSocketFactory).build(),
+                )
+
+            val failure = refusing.start(baseUrl()).exceptionOrNull() as LoginFlowException
+
+            assertEquals(LoginFlowFailure.UNREACHABLE, failure.failure)
+        }
+
+    /**
+     * A 200 that is not a Login Flow answer — a catch-all web server, a captive portal, a blog that
+     * answers every POST with its front page. It is the same mistake as a 404 here (the address is
+     * not a Nextcloud) and must come back as a value: this used to escape as a raw
+     * `SerializationException`, out of the `Result` and through `ConnectViewModel`'s coroutine.
+     */
+    @Test
+    fun `a 200 that is not a Login Flow response is NOT_NEXTCLOUD rather than an escaped exception`() =
+        runTest {
+            server.enqueue(MockResponse().setResponseCode(200).setBody("<html><body>Welcome!</body></html>"))
 
             val failure = client().start(baseUrl()).exceptionOrNull() as LoginFlowException
 
-            assertEquals(LoginFlowFailure.UNREACHABLE, failure.failure)
+            assertEquals(LoginFlowFailure.NOT_NEXTCLOUD, failure.failure)
+        }
+
+    /**
+     * The same rule at the poll, where it matters more: that body carries the app password, and a
+     * parser message echoing the input would put it in the error log.
+     */
+    @Test
+    fun `an unreadable grant fails as a value and does not echo the body`() =
+        runTest {
+            // Truncated mid-object: kotlinx.serialization's message for this quotes the JSON input.
+            val truncated = """{"server":"https://x","loginName":"u","appPassword":"app-pw-xyz""""
+            server.enqueue(MockResponse().setResponseCode(200).setBody(truncated))
+
+            val failure = client().poll(flowAt("/poll")).exceptionOrNull() as LoginFlowException
+
+            assertEquals(LoginFlowFailure.NOT_NEXTCLOUD, failure.failure)
+            assertFalse(failure.message.orEmpty().contains("app-pw-xyz"))
+        }
+
+    @Test
+    fun `an address that cannot be a URL fails before any request is made`() =
+        runTest {
+            val failure = client().start("not a host").exceptionOrNull() as LoginFlowException
+
+            assertEquals(LoginFlowFailure.NOT_NEXTCLOUD, failure.failure)
+            assertEquals(0, server.requestCount)
+        }
+
+    /**
+     * Android's network-security refusal of a plain `http://` URL. Produced faithfully: OkHttp
+     * raises the same `UnknownServiceException` from a client whose connection specs exclude
+     * cleartext, so the real catch branch runs on a plain JVM.
+     */
+    @Test
+    fun `a refused cleartext connection is CLEARTEXT_BLOCKED, not a wrong address`() =
+        runTest {
+            val tlsOnly =
+                RetrofitNextcloudLoginFlowClient(
+                    httpClient = OkHttpClient.Builder().connectionSpecs(listOf(ConnectionSpec.MODERN_TLS)).build(),
+                )
+
+            val failure = tlsOnly.start(baseUrl()).exceptionOrNull() as LoginFlowException
+
+            assertEquals(LoginFlowFailure.CLEARTEXT_BLOCKED, failure.failure)
+            assertEquals("nothing left the device", 0, server.requestCount)
+        }
+
+    /**
+     * An untrusted certificate — the self-signed reverse proxy. `SSLException` is an `IOException`,
+     * so this pins the catch order: below the IOException branch it would read "can't reach that
+     * address", sending the user to fix a host name that was right. Raised by an interceptor
+     * because a real handshake failure needs a TLS server this module's test classpath does not have.
+     */
+    @Test
+    fun `an untrusted certificate is TLS, not an unreachable address`() =
+        runTest {
+            val untrusted =
+                RetrofitNextcloudLoginFlowClient(
+                    httpClient =
+                        OkHttpClient
+                            .Builder()
+                            .addInterceptor { throw SSLHandshakeException("PKIX path building failed") }
+                            .build(),
+                )
+
+            val failure = untrusted.start(baseUrl()).exceptionOrNull() as LoginFlowException
+
+            assertEquals(LoginFlowFailure.TLS, failure.failure)
         }
 
     /**
@@ -239,6 +330,18 @@ class RetrofitNextcloudLoginFlowClientTest {
         }
 
     @Test
+    fun `a poll answered with anything but 200 or 404 abandons the flow at once`() =
+        runTest {
+            // 404 is "keep waiting"; a 403 or 500 will not turn into a grant by asking again.
+            server.enqueue(MockResponse().setResponseCode(403))
+
+            val failure = client().poll(flowAt("/poll")).exceptionOrNull() as LoginFlowException
+
+            assertEquals(LoginFlowFailure.ABANDONED, failure.failure)
+            assertEquals(1, server.requestCount)
+        }
+
+    @Test
     fun `verification only succeeds on a 200 from the gpoddersync path`() =
         runTest {
             server.enqueue(MockResponse().setResponseCode(200).setBody("""{"add":[],"remove":[],"timestamp":1}"""))
@@ -272,6 +375,16 @@ class RetrofitNextcloudLoginFlowClientTest {
             val failure = client().verifyGpodderSync(credentials()).exceptionOrNull() as LoginFlowException
 
             assertEquals(LoginFlowFailure.UNAUTHORIZED, failure.failure)
+        }
+
+    @Test
+    fun `any other verification status means the address is not a usable Nextcloud`() =
+        runTest {
+            server.enqueue(MockResponse().setResponseCode(500))
+
+            val failure = client().verifyGpodderSync(credentials()).exceptionOrNull() as LoginFlowException
+
+            assertEquals(LoginFlowFailure.NOT_NEXTCLOUD, failure.failure)
         }
 
     @Test

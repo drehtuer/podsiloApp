@@ -84,6 +84,8 @@ class ConnectViewModelTest {
                 settings.storedCredentials,
             )
             assertEquals(1, syncTrigger.syncs)
+            // Confirming stores the password — and must never revoke the one it just stored.
+            assertTrue("the stored password must not be deleted from the server", client.revoked.isEmpty())
         }
 
     @Test
@@ -200,20 +202,32 @@ class ConnectViewModelTest {
             assertEquals(ConnectError.UNREACHABLE, viewModel.state.value.inlineError)
         }
 
+    /**
+     * Every typed failure keeps its own sentence, whichever step it came from; only an *untyped* one
+     * degrades to the step's most likely cause. Collapsing them is the bug `UI.adoc` §8's table
+     * exists to prevent.
+     */
     @Test
-    fun `an untrusted certificate says so rather than blaming the address`() =
-        runTest {
-            client.startResult = Result.failure(LoginFlowException(LoginFlowFailure.TLS, "cert"))
-            val viewModel = viewModel()
-            viewModel.onEvent(ConnectEvent.HostChanged("cloud.example.org"))
+    fun `each typed failure maps to its own message and only an untyped one falls back`() {
+        val expected =
+            mapOf(
+                LoginFlowFailure.UNREACHABLE to ConnectError.UNREACHABLE,
+                LoginFlowFailure.TIMED_OUT to ConnectError.TIMED_OUT,
+                LoginFlowFailure.CLEARTEXT_BLOCKED to ConnectError.CLEARTEXT_BLOCKED,
+                LoginFlowFailure.TLS to ConnectError.TLS,
+                LoginFlowFailure.NOT_NEXTCLOUD to ConnectError.NOT_NEXTCLOUD,
+                LoginFlowFailure.NO_GPODDERSYNC to ConnectError.NO_GPODDERSYNC,
+                LoginFlowFailure.UNAUTHORIZED to ConnectError.UNAUTHORIZED,
+                LoginFlowFailure.ABANDONED to ConnectError.ABANDONED,
+            )
+        assertEquals("every failure kind is in the table", LoginFlowFailure.entries.toSet(), expected.keys)
 
-            viewModel.onEvent(ConnectEvent.Submit)
-
-            assertEquals(ConnectError.TLS, viewModel.state.value.inlineError)
+        expected.forEach { (failure, error) ->
+            // ADDRESS_INVALID is no failure's mapping, so a typed failure that silently fell through
+            // to the fallback would show up here.
+            val mapped = LoginFlowException(failure, "x").asConnectError(fallback = ConnectError.ADDRESS_INVALID)
+            assertEquals("$failure", error, mapped)
         }
-
-    @Test
-    fun `an untyped failure still degrades to the step's most likely cause`() {
         assertEquals(ConnectError.NOT_NEXTCLOUD, IllegalStateException("?").asConnectError(ConnectError.NOT_NEXTCLOUD))
         assertEquals(ConnectError.ABANDONED, IllegalStateException("?").asConnectError(ConnectError.ABANDONED))
     }
@@ -263,19 +277,30 @@ class ConnectViewModelTest {
         }
 
     @Test
-    fun `the field is read-only while a request is in flight`() =
+    fun `the field is read-only while a request is in flight, and editable again after a failure`() =
         runTest {
             // Accepting an edit mid-flow would leave the poll running against a different host than
             // the one on screen.
+            client.suspendPoll = true
             val viewModel = viewModel()
             viewModel.onEvent(ConnectEvent.HostChanged("cloud.example.org"))
-            // Force a phase that is not Editing by failing the verify step after the flow ran.
-            client.verifyResult = Result.failure(IllegalStateException("404"))
 
-            viewModel.onEvent(ConnectEvent.Submit)
-            // Back in Editing after the failure, so an edit is accepted again.
+            viewModel.effect.test {
+                viewModel.onEvent(ConnectEvent.Submit)
+                skipItems(1)
+                assertEquals(ConnectUiState.Phase.AwaitingAuthorization, viewModel.state.value.phase)
+
+                viewModel.onEvent(ConnectEvent.HostChanged("other.example.org"))
+                assertEquals("cloud.example.org", viewModel.state.value.host)
+
+                // The verify step fails, which returns the dialog to Editing.
+                client.verifyResult = Result.failure(IllegalStateException("404"))
+                client.grantAccess()
+                cancelAndIgnoreRemainingEvents()
+            }
+
+            assertEquals(ConnectUiState.Phase.Editing, viewModel.state.value.phase)
             viewModel.onEvent(ConnectEvent.HostChanged("other.example.org"))
-
             assertEquals("other.example.org", viewModel.state.value.host)
         }
 
@@ -523,9 +548,12 @@ class ConnectViewModelTest {
             )
         }
 
-    /** Backing out of the confirmation abandons the same grant, so it is revoked on the same terms. */
+    /**
+     * Backing out of the confirmation abandons the same grant, so it is revoked on the same terms —
+     * and the discarded password must not be left in memory for a later confirmation to store.
+     */
     @Test
-    fun `cancelling at the confirmation revokes it too`() =
+    fun `cancelling at the confirmation revokes the grant and discards it`() =
         runTest {
             val viewModel = viewModel()
             viewModel.onEvent(ConnectEvent.HostChanged("cloud.example.org"))
@@ -534,28 +562,13 @@ class ConnectViewModelTest {
                 viewModel.onEvent(ConnectEvent.Submit)
                 skipItems(1)
                 viewModel.onEvent(ConnectEvent.Cancel)
-                cancelAndIgnoreRemainingEvents()
+                viewModel.onEvent(ConnectEvent.ConfirmAccount)
+
+                expectNoEvents()
             }
 
             assertEquals(1, client.revoked.size)
-        }
-
-    /** Confirming stores it — and must never revoke the password it just stored. */
-    @Test
-    fun `confirming the account revokes nothing`() =
-        runTest {
-            val viewModel = viewModel()
-            viewModel.onEvent(ConnectEvent.HostChanged("cloud.example.org"))
-
-            viewModel.effect.test {
-                viewModel.onEvent(ConnectEvent.Submit)
-                skipItems(1)
-                viewModel.onEvent(ConnectEvent.ConfirmAccount)
-                cancelAndIgnoreRemainingEvents()
-            }
-
-            assertEquals("the stored password must not be deleted from the server", 0, client.revoked.size)
-            assertEquals("app-password", settings.storedCredentials?.appPassword)
+            assertNull(settings.storedCredentials)
         }
 
     /**
@@ -584,21 +597,26 @@ class ConnectViewModelTest {
             assertEquals(0, syncTrigger.syncs)
         }
 
+    /**
+     * Submitting an address the field already rejected contacts nothing — a keyboard *Go* is the
+     * one way to submit that does not pass the button — and still leaves the reason in the log.
+     */
     @Test
-    fun `cancelling the confirmation discards the granted password too`() =
+    fun `submitting a rejected address contacts nothing and logs why`() =
         runTest {
             val viewModel = viewModel()
-            viewModel.onEvent(ConnectEvent.HostChanged("cloud.example.org"))
+            viewModel.onEvent(ConnectEvent.HostChanged("cloud drehtuer.net"))
 
-            viewModel.effect.test {
-                viewModel.onEvent(ConnectEvent.Submit)
-                skipItems(1)
-                viewModel.onEvent(ConnectEvent.Cancel)
-                viewModel.onEvent(ConnectEvent.ConfirmAccount)
+            viewModel.onEvent(ConnectEvent.Submit)
 
-                expectNoEvents()
-            }
-
-            assertNull(settings.storedCredentials)
+            assertTrue("nothing may be contacted", client.startedWith.isEmpty())
+            assertEquals(ConnectError.ADDRESS_HAS_SPACE, viewModel.state.value.inlineError)
+            assertEquals(ConnectUiState.Phase.Editing, viewModel.state.value.phase)
+            assertTrue(
+                log.recorded
+                    .single()
+                    .message
+                    .contains("ADDRESS_HAS_SPACE"),
+            )
         }
 }

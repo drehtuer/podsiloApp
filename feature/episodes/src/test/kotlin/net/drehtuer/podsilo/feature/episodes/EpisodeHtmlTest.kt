@@ -113,13 +113,6 @@ class EpisodeHtmlTest {
     }
 
     @Test
-    fun `CDATA-wrapped markup is handled like any other markup`() {
-        // rssparser hands CDATA through as its content, so by the time it arrives here it is just
-        // HTML — this pins that it is treated as such rather than printed with its wrapper.
-        assertEquals("Hello world", render("<p>Hello <b>world</b></p>").trim())
-    }
-
-    @Test
     fun `unknown tags degrade to their text rather than being printed`() {
         // The safe direction: an unrecognised tag can only lose formatting, never gain capability.
         assertEquals("content", render("<marquee><blink>content</blink></marquee>"))

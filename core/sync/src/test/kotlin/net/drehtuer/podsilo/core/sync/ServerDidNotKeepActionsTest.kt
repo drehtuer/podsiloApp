@@ -128,6 +128,25 @@ class ServerDidNotKeepActionsTest {
     }
 
     /**
+     * A row from a guid-less feed is keyed by its enclosure URL, and the echo carries `guid = null`.
+     * The match has to go through the same identification rule as everything else, or every
+     * decision on such a feed would be reported as lost.
+     */
+    @Test
+    fun `a guid-less decision echoed back by its episode url is not reported`() {
+        val enclosure = "https://example.com/no-guid.mp3"
+        val row = skippedRow(episodeKey = enclosure, feedUrl = OTHER_FEED).copy(enclosureUrl = enclosure)
+        val ledger = FakeEpisodeLedgerRepository(listOf(row))
+        val log = RecordingLogRepository()
+        val echo = playOf(row).copy(guid = null)
+        val client = FakeGpodderClient(episodeActionsPage = pageOf(echo))
+
+        runBlocking { orchestratorOf(ledger, client, log).sync() }
+
+        assertEquals(emptyList<Any>(), log.recorded)
+    }
+
+    /**
      * The skew guard. The server selects `timestamp_epoch > :since` on the *client-authored*
      * timestamp, so a row older than the `since` we asked for is invisible to the pull whether the
      * server kept it or not — and reporting it would be crying wolf. Silence is the only safe

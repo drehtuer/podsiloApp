@@ -4,10 +4,10 @@ package net.drehtuer.podsilo.core.download
 
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
@@ -56,16 +56,6 @@ class AudioTagWriterTest {
     }
 
     @Test
-    fun `genre defaults to Podcast when not overridden`() {
-        val file = copyOfSilenceFixture()
-        val data = AudioTagData(title = "Title", artist = "Artist", album = "Album")
-
-        writer.writeTags(file, data)
-
-        assertEquals("Podcast", AudioFileIO.read(file).tag.getFirst(FieldKey.GENRE))
-    }
-
-    @Test
     fun `optional fields left null are simply not written, not blanked`() {
         val file = copyOfSilenceFixture()
         val data = AudioTagData(title = "Title", artist = "Artist", album = "Album")
@@ -103,46 +93,12 @@ class AudioTagWriterTest {
     private fun File.embeddedArtwork() = AudioFileIO.read(this).tag?.firstArtwork
 
     @Test
-    fun `artwork is embedded when the file has none`() {
-        // The feature: a file with no cover gets the episode's, or failing that the podcast's.
-        val file = copyOfSilenceFixture()
-        assertNull("fixture should start with no artwork", file.embeddedArtwork())
-
-        writer.writeTags(file, tagData().copy(artwork = cover))
-
-        assertArrayEquals(cover.bytes, file.embeddedArtwork()?.binaryData)
-    }
-
-    @Test
-    fun `artwork the publisher already embedded is never replaced`() {
-        // The explicit boundary of the request: fill a gap, do not normalise every file. A
-        // publisher who shipped per-episode art meant it.
-        val file = copyOfSilenceFixture()
-        val original = EpisodeArtwork(byteArrayOf(9, 9, 9), "image/png", EpisodeArtwork.Source.EPISODE)
-        writer.writeTags(file, tagData().copy(artwork = original))
-
-        writer.writeTags(file, tagData().copy(artwork = cover))
-
-        assertArrayEquals("the original cover was overwritten", original.bytes, file.embeddedArtwork()?.binaryData)
-    }
-
-    @Test
     fun `no artwork supplied leaves the file without any`() {
         val file = copyOfSilenceFixture()
 
         writer.writeTags(file, tagData().copy(artwork = null))
 
         assertNull(file.embeddedArtwork())
-    }
-
-    @Test
-    fun `the text fields are still written alongside artwork`() {
-        val file = copyOfSilenceFixture()
-
-        val outcome = writer.writeTags(file, tagData().copy(artwork = cover))
-
-        assertTrue(outcome is TagWriteOutcome.Success || outcome is TagWriteOutcome.PartialSuccess)
-        assertEquals("Warum Hamburg immer regnet", AudioFileIO.read(file).tag?.getFirst(FieldKey.TITLE))
     }
 
     private fun tagData() =
@@ -164,18 +120,40 @@ class AudioTagWriterTest {
         assertEquals(TagWriteOutcome.Success, outcome)
     }
 
-    @Test
-    fun `embedding into a file with no artwork is a clean Success`() {
-        val outcome = writer.writeTags(copyOfSilenceFixture(), tagData().copy(artwork = cover))
-
-        assertEquals(TagWriteOutcome.Success, outcome)
+    private fun copyOfFixture(name: String): File {
+        val bytes = requireNotNull(javaClass.classLoader?.getResourceAsStream("audio/$name")?.use { it.readBytes() })
+        return Files.createTempFile("podsilo-tag-test", "." + name.substringAfterLast('.')).toFile().apply {
+            deleteOnExit()
+            writeBytes(bytes)
+        }
     }
 
+    /**
+     * The only way [TagWriteOutcome.PartialSuccess] is produced from a real file: MP4's track atom
+     * holds a number, so a non-numeric track is refused while every other field still lands. The
+     * refused key is reported, and the write is not abandoned over it (CLAUDE.md §6).
+     */
     @Test
-    fun `supplying no artwork at all is a clean Success, not a skip`() {
-        // No cover was asked for, so nothing was skipped — the distinction the flag has to keep.
-        val outcome = writer.writeTags(copyOfSilenceFixture(), tagData().copy(artwork = null))
+    fun `a field the container refuses is reported, and the rest are still written`() {
+        val file = copyOfFixture("silence.m4a")
 
-        assertEquals(TagWriteOutcome.Success, outcome)
+        val outcome = writer.writeTags(file, tagData().copy(year = "2026", trackNumber = "not a number"))
+
+        assertEquals(TagWriteOutcome.PartialSuccess(listOf(FieldKey.TRACK)), outcome)
+        val tag = AudioFileIO.read(file).tag
+        assertEquals("Warum Hamburg immer regnet", tag.getFirst(FieldKey.TITLE))
+        assertEquals("2026", tag.getFirst(FieldKey.YEAR))
+    }
+
+    /** A file that reads fine but cannot be rewritten fails the *tagging*, as a value — never the download. */
+    @Test
+    fun `a file that cannot be written back is a Failure, not an exception`() {
+        val file = copyOfFixture("silence.m4a")
+        file.setWritable(false)
+        assumeTrue("running as a user who can write read-only files (root?)", !file.canWrite())
+
+        val outcome = writer.writeTags(file, tagData())
+
+        assertTrue("expected Failure, got $outcome", outcome is TagWriteOutcome.Failure)
     }
 }

@@ -45,6 +45,9 @@ class FeedXmlParserTest {
         assertEquals("guid-episode-2", first.episodeKey)
         assertEquals("https://example.com/episodes/ep2.mp3", first.enclosureUrl)
         assertEquals((1 * 60 + 32) * 60 * 1000L + 15 * 1000L, first.durationMs)
+        // Tue, 14 Jul 2026 09:00:00 +0000 — the instant, independent of the device's zone.
+        assertEquals(1_784_019_600_000L, first.pubDate)
+        assertEquals("Eine Folge über das Wetter in Hamburg.", first.description)
 
         val second = result.episodes[1]
         assertEquals("Folge 1: Der Anfang", second.title)
@@ -146,6 +149,29 @@ class FeedXmlParserTest {
             assertEquals(episodeCount, result.episodes.size)
             assertEquals("guid-1", result.episodes.first().episodeKey)
             assertEquals("guid-$episodeCount", result.episodes.last().episodeKey)
+        }
+
+    @Test
+    fun `an unknown enclosure length is no size at all, and the item link is kept trimmed`() =
+        runBlocking {
+            // Feeds write length="0" when they mean "no idea"; "0 MB" on a row would be a lie.
+            val xml =
+                """
+                |<?xml version="1.0" encoding="UTF-8"?>
+                |<rss version="2.0"><channel><title>T</title>
+                |  <item><title>Zero</title><guid>zero</guid><link>  https://example.com/zero  </link>
+                |    <enclosure url="https://example.com/zero.mp3" length="0" type="audio/mpeg"/></item>
+                |  <item><title>Absent</title><guid>absent</guid>
+                |    <enclosure url="https://example.com/absent.mp3" type="audio/mpeg"/></item>
+                |</channel></rss>
+                """.trimMargin().toByteArray()
+
+            val byGuid = parser.parse(feedUrl, xml).episodes.associateBy { it.guid }
+
+            assertNull(byGuid.getValue("zero").sizeBytes)
+            assertNull(byGuid.getValue("absent").sizeBytes)
+            assertEquals("https://example.com/zero", byGuid.getValue("zero").link)
+            assertNull("no link is never synthesised from the enclosure", byGuid.getValue("absent").link)
         }
 
     @Test

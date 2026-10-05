@@ -2,6 +2,7 @@
 
 package net.drehtuer.podsilo.core.sync
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import net.drehtuer.podsilo.core.model.EpisodeLedgerRow
 import net.drehtuer.podsilo.core.model.LedgerState
@@ -10,7 +11,7 @@ import net.drehtuer.podsilo.core.model.port.GpodderException
 import net.drehtuer.podsilo.core.model.port.GpodderFailure
 import net.drehtuer.podsilo.core.model.port.LogCategory
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -111,47 +112,85 @@ class SyncFailureLoggingTest {
     // HttpException — not an IOException — so an expired app password was reported as an unexpected
     // error under the SYNC chip, which is the one category S8's filter exists to separate it from.
 
+    /**
+     * Every [GpodderFailure], through a failed pass: whether it is retried is the port's verdict
+     * ([GpodderFailure.retryable]), only [GpodderFailure.UNAUTHORIZED] files under the *Account* chip
+     * with its own instruction, and each of the rest gets a reason of its own rather than one generic
+     * "sync failed".
+     */
     @Test
-    fun anExpiredAppPasswordIsAnAuthEntryAndIsNotRetried() =
+    fun everyTypedFailureIsClassifiedAndWorded() =
         runBlocking {
-            val failure = GpodderException(GpodderFailure.UNAUTHORIZED, "HTTP 401 Unauthorized", statusCode = 401)
+            val expectedMessages =
+                mapOf(
+                    GpodderFailure.UNAUTHORIZED to
+                        "Nextcloud rejected the stored app password. Connect the account again in Settings.",
+                    GpodderFailure.SERVER_ERROR to "Sync with Nextcloud failed: the server reported an error.",
+                    GpodderFailure.REJECTED to "Sync with Nextcloud failed: the server refused the request.",
+                    GpodderFailure.UNREACHABLE to "Sync with Nextcloud failed: the server could not be reached.",
+                    GpodderFailure.TIMED_OUT to "Sync with Nextcloud failed: the server did not answer in time.",
+                    GpodderFailure.MALFORMED to "Sync with Nextcloud failed: the server's answer could not be read.",
+                )
+            assertEquals("a new failure needs a row here", GpodderFailure.entries.toSet(), expectedMessages.keys)
 
-            val outcome = orchestrator(FakeGpodderClient(subscriptionsFailure = failure)).sync()
+            for ((failure, message) in expectedMessages) {
+                log.clear()
+                val exception = GpodderException(failure, "transport text for $failure")
 
-            assertTrue("a revoked password will still be revoked next time", outcome is SyncOutcome.Failure)
-            val entry = log.recorded.single()
-            assertEquals(LogCategory.AUTH, entry.category)
-            assertEquals(
-                "Nextcloud rejected the stored app password. Connect the account again in Settings.",
-                entry.message,
-            )
+                val outcome = orchestrator(FakeGpodderClient(subscriptionsFailure = exception)).sync()
+
+                val expectedOutcome =
+                    if (failure.retryable) {
+                        SyncOutcome.Retry("transport text for $failure")
+                    } else {
+                        SyncOutcome.Failure("transport text for $failure")
+                    }
+                assertEquals("$failure", expectedOutcome, outcome)
+                val entry = log.recorded.single()
+                val category = if (failure == GpodderFailure.UNAUTHORIZED) LogCategory.AUTH else LogCategory.SYNC
+                assertEquals("$failure", category, entry.category)
+                assertEquals("$failure", message, entry.message)
+                assertTrue("$failure", entry.detail.orEmpty().contains("transport text for $failure"))
+            }
         }
 
+    /**
+     * Cancellation is not a failure. WorkManager stopping the worker must unwind the coroutine, not
+     * be filed in S8 as a sync error and reported as a Failure that WorkManager would then record.
+     */
     @Test
-    fun aServerErrorIsRetriedAndStaysUnderSync() =
-        runBlocking {
-            val failure = GpodderException(GpodderFailure.SERVER_ERROR, "HTTP 503 Service Unavailable", 503)
+    fun cancellationPropagatesAndIsNotLogged() {
+        val client = FakeGpodderClient(subscriptionsFailure = CancellationException("worker stopped"))
 
-            val outcome = orchestrator(FakeGpodderClient(episodeActionsFailure = failure)).sync()
+        assertThrows(CancellationException::class.java) {
+            runBlocking { orchestrator(client).sync() }
+        }
+        assertTrue(log.recorded.isEmpty())
+    }
+
+    /**
+     * A push failure that is not a [GpodderException] -- the port's contract says it never happens,
+     * which is why it is assumed transient: the rows are safe in the outbox, so asking again is
+     * cheap, and the sentence names no cause it does not know.
+     */
+    @Test
+    fun anUntypedPushFailureIsRetriedWithoutInventingACause() =
+        runBlocking {
+            val ledger = FakeEpisodeLedgerRepository()
+            ledger.upsert(skippedRow("guid-1"))
+
+            val outcome =
+                orchestrator(
+                    FakeGpodderClient(postResult = Result.failure(IllegalStateException("boom"))),
+                    ledger,
+                ).sync()
 
             assertTrue(outcome is SyncOutcome.Retry)
-            val entry = log.recorded.single()
-            assertEquals(LogCategory.SYNC, entry.category)
-            assertEquals("Sync with Nextcloud failed: the server reported an error.", entry.message)
-        }
-
-    @Test
-    fun anUnreadableAnswerIsNotRetried() =
-        runBlocking {
-            val failure = GpodderException(GpodderFailure.MALFORMED, "Unexpected JSON token at offset 0")
-
-            val outcome = orchestrator(FakeGpodderClient(subscriptionsFailure = failure)).sync()
-
-            assertTrue("asking again gets the same unreadable answer", outcome is SyncOutcome.Failure)
             assertEquals(
-                "Sync with Nextcloud failed: the server's answer could not be read.",
+                "1 decision(s) could not be sent to Nextcloud. They are kept here and will be sent again.",
                 log.recorded.single().message,
             )
+            assertEquals(1, ledger.getUnsynced().size)
         }
 
     /**
@@ -176,19 +215,6 @@ class SyncFailureLoggingTest {
             )
             assertTrue("the reassurance survives", entry.message.contains("will be sent again"))
             assertEquals("nothing may be marked synced without a 2xx", 1, ledger.getUnsynced().size)
-        }
-
-    /** No message may carry the exception's own text as the headline — that is what `detail` is for. */
-    @Test
-    fun thePlainSentenceIsNeverTheExceptionMessage() =
-        runBlocking {
-            val raw = "failed to connect to cloud.example.org/10.0.0.1:443 after 30000ms"
-
-            orchestrator(FakeGpodderClient(subscriptionsFailure = IOException(raw))).sync()
-
-            val entry = log.recorded.single()
-            assertFalse("the raw failure belongs in the detail, not the headline", entry.message.contains(raw))
-            assertTrue(entry.detail.orEmpty().contains(raw))
         }
 
     private fun skippedRow(episodeKey: String) =

@@ -7,7 +7,6 @@ import org.jaudiotagger.tag.FieldKey
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.ParameterizedRobolectricTestRunner
@@ -58,9 +57,10 @@ class NonMp3TaggingTest(
 ) {
     companion object {
         /**
-         * MP3 is in the list deliberately. These same assertions already pass for it in
-         * [AudioTagWriterTest], and running them here too is what makes a failure readable as "this
-         * container is different" rather than "this test is different".
+         * MP3 is in the list deliberately: it is the baseline the other three are compared against,
+         * which is what makes a failure readable as "this container is different" rather than "this
+         * test is different". It is also the *only* place the artwork rules are asserted for MP3 —
+         * [AudioTagWriterTest] covers the field-level behaviour and does not repeat them.
          */
         @JvmStatic
         @ParameterizedRobolectricTestRunner.Parameters(name = "{0}")
@@ -110,6 +110,8 @@ class NonMp3TaggingTest(
         val outcome = writer.writeTags(file, tagData().copy(artwork = cover))
 
         assertEquals("$fixture no longer accepts everything", TagWriteOutcome.Success, outcome)
+        // Success with artwork must not have come at the cost of the text fields.
+        assertEquals("Warum Hamburg immer regnet", AudioFileIO.read(file).tag.getFirst(FieldKey.TITLE))
     }
 
     /**
@@ -129,23 +131,6 @@ class NonMp3TaggingTest(
         assertEquals("Der Podcast", readBack.getFirst(FieldKey.ARTIST))
         assertEquals("Der Podcast", readBack.getFirst(FieldKey.ALBUM))
         assertEquals("Podcast", readBack.getFirst(FieldKey.GENRE))
-    }
-
-    /** A skipped field is *reported*, never silently dropped — that is the whole point of the type. */
-    @Test
-    fun `any field a container refuses comes back in PartialSuccess`() {
-        val file = copyOfFixture()
-
-        val outcome = writer.writeTags(file, tagData())
-
-        val skipped = (outcome as? TagWriteOutcome.PartialSuccess)?.skippedFields.orEmpty()
-        val tag = AudioFileIO.read(file).tag
-        skipped.forEach { key ->
-            assertTrue(
-                "$fixture reported $key skipped, but it is present — the report would be a lie",
-                tag.getFirst(key).isNullOrEmpty(),
-            )
-        }
     }
 
     @Test

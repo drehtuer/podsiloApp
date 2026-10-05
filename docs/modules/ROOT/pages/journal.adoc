@@ -6688,3 +6688,94 @@ one actually followed.
 *The immutable-release order still governs everything:* merge the bump, push the tag, wait for CI to
 attach the APKs to the *draft*, then publish. Publishing first burns the version number for good --
 that is how v0.5.0 was lost, and the tag stays reserved even after the release is deleted.
+
+
+== 2026-10-05 — A test audit: prune the duplicates, cover what nothing reached
+
+*Attempted:* go through every Tier 1 test, remove duplicated tests and tests already covered by
+others, and raise coverage without adding tests that only exist to move a number. Five agents ran
+in parallel, one per group of modules (sync/model/naming, database/datastore,
+download/feed/gpodder, episodes/ui, settings/app), each in its own worktree, and their branches
+were merged locally into one PR.
+
+*Result, measured on the merged branch:* `./gradlew ktlintCheck detekt coverage` is green: 930
+test executions, 0 failures, 3 skipped (the opodsync integration tests, which need a live server).
+Across the eleven modules with a baseline report, line coverage rose from 77.0 % to 85.8 % and
+branch coverage from 61.6 % to 73.3 %. The biggest gains were `:app` (42 % → 56 %),
+`:core:datastore` (60 % → 80 %), `:core:download` (81 % → 93 %) and `:core:database`
+(81 % → 90 %). `@Test` methods went from 812 to 919, but that count understates the pruning:
+dozens of single-case tests were folded into tables, and each removal is named in its commit
+message together with the test that now covers it. `:core:model` stays at 33 % on purpose: what
+it lacks is interfaces and data classes, and no test was added just to touch them.
+
+*Three real bugs fell out, each fixed in its own `fix:` commit, with a regression test confirmed to
+fail when that fix alone is reverted* (reverted in the merged tree, run, then restored):
+
+* `{date:…}` output was inserted into the filename unsanitised, so `{date:yyyy/MM/dd}` put `/` into
+  a FAT32 name, and `{date:}` produced the empty leading segment §6 forbids.
+* `parseItunesDuration` accepted negative components: `1:-30:00` came back as a tidy 30 minutes,
+  which is exactly the invented duration §5 forbids.
+* The Login Flow client let a `SerializationException` escape its `Result` when a 200 carried a body
+  that was not a Login Flow answer (a captive portal, a catch-all web server), which crashed the
+  connect screen's coroutine. The new failure message is fixed text, because kotlinx's own message
+  quotes the body, and a poll body holds the app password.
+
+*One suspected bug is in the backlog, not in the code:* a local `UNPLAYED` can be overwritten by an
+older remote "ended" `PLAY`, because `reconcile` filters actions before comparing timestamps. It
+was found by reading the code and has not been reproduced. Fixing it changes a sync conflict rule,
+which §9 says to ask about first.
+
+*A host-dependent test was found and made deterministic.* `RetrofitGpodderClientTest` dialled
+`localhost:1` and expected connection-refused. Under WSL2 `networkingMode=Mirrored`, a closed local
+port *times out* instead, so the test failed on this machine. It now uses an injected socket factory
+that refuses in-process. Two other tests depended on the same kind of thing — a shut-down
+MockWebServer port, and real DNS for `.invalid` — and were fixed the same way.
+
+*What went badly, for the experiment's record:*
+
+* *The session ran on the WSL host, not in the dev container,* and the host has neither an Android
+  SDK nor a JDK 17. The workaround was a throwaway `eclipse-temurin:17-jdk` container with the
+  existing `podsilo-android-sdk` and `podsilo-gradle` volumes mounted. It needed a fake `/etc/passwd`
+  entry before Robolectric would run, because an unknown UID gives `user.home = ?`. Three failed
+  baseline attempts came first.
+* *Parallel agents, serial Gradle.* With about 10 GB of free memory and a 4 GB heap per build, the
+  five agents shared one `flock` around Gradle. Edits ran in parallel; builds queued, and some
+  agents waited about 40–60 minutes per run. Wall-clock time came to several hours, dominated by
+  cold `--no-daemon` builds in five fresh worktrees. For a task like this, one long-lived container
+  with a warm daemon would have been far cheaper.
+* *All five agents hit the account's session rate limit at the same moment* and had to be resumed.
+  One had been writing its drafts into the scratchpad rather than its worktree, and moved them over
+  when resumed. Nothing was lost, but "an agent's worktree shows no changes" did not mean "the agent
+  has done nothing".
+* *Two agent claims needed checking rather than trusting:* "the regression test fails before the
+  fix", which two agents asserted from reading the code, and a 38-second "successful" build. Both
+  were settled by running them again on the merged tree.
+
+*Not verified:* the new `SafDownloadTarget` Robolectric test covers only the failure paths, and the
+success path still needs a real DocumentsProvider (androidTest). `WorkEpisodeScheduler`'s "returns
+once the refresh finished" contract is still untested: an attempt timed out under Robolectric and was
+dropped rather than shipped flaky. No instrumented tests (Tier 2/3) were run.
+
+*Later the same day: the device set on the Pixel 10a (Android 17), over wireless debugging.* All 61
+tests pass: `:core:datastore` 6, `:core:download` 3, `:core:ui` 4, `:feature:episodes` 18,
+`:feature:settings` 8, `:app` 22 -- 0 failed, 0 skipped. The author approved replacing the phone's
+0.7.1 release install with the debug build, which wiped its data. Getting there took four
+attempts, each failing for a reason worth recording:
+
+* *A locked phone fails every Compose test* with "No compose hierarchies found", and nothing in the
+  message points at the lock screen. The phone had a secure keyguard, so it could not be dismissed
+  over adb. The author unlocked it, and the screen-off timeout was raised for the run and restored
+  afterwards.
+* *`DownloadPipelineInstrumentedTest` failed instead of skipping* when no folder was granted.
+  `assumeTrue` in `setUp` skips before the `lateinit` databases are assigned, and `@After` still
+  runs and touches them. Every earlier device run had a folder granted, so this had never shown.
+  Fixed with `isInitialized` guards, and confirmed on the phone (one failure became seven skips).
+* *Connecting the account does not fetch any feed.* The sync mirrored four subscriptions and 71
+  ledger rows, but every feed stayed unrefreshed (titles still bare URLs, zero episodes) until a
+  manual pull-to-refresh. The only queued job was the periodic refresh, about four hours out.
+  Whether connecting should trigger a refresh is a UX question, not settled here.
+
+*Unexplained, not fixed:* every library module's `connectedDebugAndroidTest` task fails even when
+all its tests pass. AGP's test engine (`com.android.tools.androidtest.testengine`) writes exit code 1
+to `test-result-exit-code.txt` and logs nothing, even with `--debug`. Possibly related to the AGP 9.4.1
+bump in #132; that is unverified. CI does not run this tier, so nothing else would have noticed.

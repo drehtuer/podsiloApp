@@ -312,19 +312,6 @@ class SettingsViewModelTest {
             assertTrue("no file may be opened while unconnected", archive.imported.isEmpty())
         }
 
-    @Test
-    fun `restore proceeds once an account exists`() =
-        runTest {
-            settings.account.value = NextcloudAccount("https://cloud.example.org", "podsilo")
-            val viewModel = viewModel()
-
-            viewModel.state.test {
-                skipItems(1)
-                viewModel.onEvent(SettingsEvent.RestoreDatabaseClicked)
-                assertTrue(awaitItem().restoreConfirmationVisible)
-            }
-        }
-
     /**
      * The safeguard, and the reason restore is two steps rather than one: a restore replaces the
      * ledger, and nothing may be read from a file until the user has been told that in words.
@@ -396,6 +383,31 @@ class SettingsViewModelTest {
                 )
             }
         }
+
+    @Test
+    fun `a failed export says the backup was not written`() =
+        runTest {
+            archive.outcome = ArchiveOutcome.Failed(ArchiveFailure.WRITE_FAILED)
+            val viewModel = viewModel()
+
+            viewModel.effect.test {
+                viewModel.onEvent(SettingsEvent.BackupDestinationChosen("content://docs/full.zip"))
+
+                assertEquals(
+                    "The backup couldn't be written.",
+                    (awaitItem() as SettingsEffect.ShowMessage).text,
+                )
+            }
+        }
+
+    @Test
+    fun `relative times stay coarse at every scale`() {
+        assertEquals("just now", relativeTime(now.minusSeconds(30), now))
+        assertEquals("59 min ago", relativeTime(now.minusSeconds(59 * 60), now))
+        assertEquals("1 h ago", relativeTime(now.minusSeconds(60 * 60), now))
+        assertEquals("23 h ago", relativeTime(now.minusSeconds(23 * 60 * 60 + 59 * 60), now))
+        assertEquals("2 d ago", relativeTime(now.minusSeconds(2 * 24 * 60 * 60), now))
+    }
 }
 
 /** Shared with the directional-sync tests: one settling helper beats two that drift. */

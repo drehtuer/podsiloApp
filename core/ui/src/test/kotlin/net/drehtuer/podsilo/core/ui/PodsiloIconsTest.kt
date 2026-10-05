@@ -2,9 +2,17 @@
 
 package net.drehtuer.podsilo.core.ui
 
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -19,6 +27,9 @@ import org.robolectric.RobolectricTestRunner
  */
 @RunWith(RobolectricTestRunner::class)
 class PodsiloIconsTest {
+    @get:Rule
+    val compose = createComposeRule()
+
     private val all =
         mapOf(
             "Back" to PodsiloIcons.Back,
@@ -61,20 +72,33 @@ class PodsiloIconsTest {
         assertEquals(26, all.size)
     }
 
-    @Test
-    fun `handled elsewhere is not the same tick as a download this device performed`() {
-        // §18: the user did not make that decision here, and the affordances differ (§12.6).
-        assertNotEquals(PodsiloIcons.Check, PodsiloIcons.HandledRemotely)
-    }
-
-    @Test
-    fun `a condition the queue is in is not the same icon as input the user can fix`() {
-        // Swapping them makes a typo look like a system fault and vice versa (§18).
-        assertNotEquals(PodsiloIcons.Warning, PodsiloIcons.InputError)
-    }
-
+    /**
+     * `UI.adoc` §18 names pairs that "make the UI lie if used interchangeably" — `HandledRemotely`
+     * against `Check` (the user did not make that decision here, §12.6) and `Warning` against
+     * `InputError` (a queue condition against input the user can fix). Distinctness across the
+     * whole list covers both pairs and every pair nobody has named yet.
+     */
     @Test
     fun `every icon is distinct`() {
         assertTrue("two names share one glyph", all.values.toSet().size == all.size)
+    }
+
+    /**
+     * The one way an icon reaches the screen, and its contract is the nullable description: `null`
+     * beside its own label must not be announced, an icon-only control must be (`UI.adoc` §12.12).
+     */
+    @Test
+    fun `an icon is announced exactly when it is given a description`() {
+        compose.setContent {
+            Row {
+                PodsiloIcon(PodsiloIcons.Settings, contentDescription = "Settings")
+                PodsiloIcon(PodsiloIcons.Back, contentDescription = null)
+            }
+        }
+
+        compose.onNodeWithContentDescription("Settings").assertIsDisplayed()
+        compose
+            .onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.ContentDescription))
+            .assertCountEquals(1)
     }
 }

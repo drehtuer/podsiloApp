@@ -9,6 +9,7 @@ import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -103,7 +104,7 @@ class ArtworkFetcherTest {
     @Test
     fun `an unreachable host resolves to null rather than throwing`() {
         // A dead image host must not propagate out of a download.
-        assertNull(fetcher.fetch("http://podsilo.invalid/cover.jpg", null))
+        assertNull(ArtworkFetcher(unresolvableHttpClient()).fetch("https://covers.example.org/cover.jpg", null))
     }
 
     @Test
@@ -114,5 +115,18 @@ class ArtworkFetcherTest {
         server.enqueue(image(large))
 
         assertEquals(large.size, fetcher.fetch(server.url("/huge.jpg").toString(), null)?.bytes?.size)
+    }
+
+    @Test
+    fun `artwork compares by its bytes, not by array identity`() {
+        // A data class over a ByteArray would otherwise compare two identical downloads unequal, and
+        // an assertion of "the same cover" could never pass.
+        val a = EpisodeArtwork(jpeg.copyOf(), "image/jpeg", EpisodeArtwork.Source.EPISODE)
+        val b = EpisodeArtwork(jpeg.copyOf(), "image/jpeg", EpisodeArtwork.Source.EPISODE)
+
+        assertEquals(a, b)
+        assertEquals(a.hashCode(), b.hashCode())
+        assertNotEquals(a, b.copy(source = EpisodeArtwork.Source.PODCAST))
+        assertNotEquals(a, b.copy(bytes = byteArrayOf(1)))
     }
 }

@@ -9,7 +9,6 @@ import net.drehtuer.podsilo.core.model.LedgerState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Clock
 import java.time.Instant
@@ -114,25 +113,4 @@ class MarkAsUnplayedTest {
 
             assertEquals(1, syncTrigger.requests)
         }
-
-    /**
-     * The row exists, so the app has a history — but every affordance an undecided episode has is
-     * back, which is the point of the exercise.
-     */
-    @Test
-    fun `an unplayed row offers what an undecided episode offers`() {
-        val actions = actionsFor(LedgerState.UNPLAYED, hasEnclosure = true, hasPage = false)
-
-        assertEquals(setOf(EpisodeUiAction.DOWNLOAD, EpisodeUiAction.MARK_AS_PLAYED), actions)
-    }
-
-    /** And the three states that claim the episode is finished are the three that offer the way back. */
-    @Test
-    fun `every state that claims the episode is handled offers mark as unplayed`() {
-        listOf(LedgerState.DOWNLOADED, LedgerState.SKIPPED, LedgerState.HANDLED_REMOTELY).forEach { state ->
-            val actions = actionsFor(state, hasEnclosure = true, hasPage = false)
-
-            assertTrue("state=$state", EpisodeUiAction.MARK_AS_UNPLAYED in actions)
-        }
-    }
 }

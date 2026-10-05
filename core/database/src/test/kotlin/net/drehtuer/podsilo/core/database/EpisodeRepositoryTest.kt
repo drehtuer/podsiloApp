@@ -67,4 +67,23 @@ class EpisodeRepositoryTest : RoomTestBase() {
 
             assertEquals(emptyList<String>(), episodes.observeForFeed("a").first().map { it.episodeKey })
         }
+
+    /**
+     * S1's ordering input. A feed whose episodes are all undated must be **absent**, not present
+     * with some sentinel: the caller sorts a missing feed as "never published", and an invented
+     * date would rank it as ancient or brand new depending on the sentinel.
+     */
+    @Test
+    fun `latestPublicationByFeed is the newest dated episode per feed, and omits undated-only feeds`() =
+        runTest {
+            feeds.replaceAll(listOf(feed("a"), feed("b"), feed("undated"), feed("empty")))
+            episodes.replaceForFeed(
+                "a",
+                listOf(episode("a1", "a", pubDate = 100), episode("a2", "a", pubDate = 300), episode("a3", "a")),
+            )
+            episodes.replaceForFeed("b", listOf(episode("b1", "b", pubDate = 200)))
+            episodes.replaceForFeed("undated", listOf(episode("u1", "undated")))
+
+            assertEquals(mapOf("a" to 300L, "b" to 200L), episodes.latestPublicationByFeed())
+        }
 }

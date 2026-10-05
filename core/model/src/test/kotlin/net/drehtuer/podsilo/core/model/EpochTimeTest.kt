@@ -44,7 +44,6 @@ class EpochTimeTest {
     @Test
     fun `null timestamps stay null rather than becoming epoch`() {
         assertNull(EpochTime.ofMillisOrNull(null))
-        assertNull(EpochTime.durationOfMillis(null))
     }
 
     @Test

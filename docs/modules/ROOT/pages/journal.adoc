@@ -6755,3 +6755,27 @@ MockWebServer port, and real DNS for `.invalid` — and were fixed the same way.
 success path still needs a real DocumentsProvider (androidTest). `WorkEpisodeScheduler`'s "returns
 once the refresh finished" contract is still untested: an attempt timed out under Robolectric and was
 dropped rather than shipped flaky. No instrumented tests (Tier 2/3) were run.
+
+*Later the same day: the device set on the Pixel 10a (Android 17), over wireless debugging.* All 61
+tests pass: `:core:datastore` 6, `:core:download` 3, `:core:ui` 4, `:feature:episodes` 18,
+`:feature:settings` 8, `:app` 22 -- 0 failed, 0 skipped. The author approved replacing the phone's
+0.7.1 release install with the debug build, which wiped its data. Getting there took four
+attempts, each failing for a reason worth recording:
+
+* *A locked phone fails every Compose test* with "No compose hierarchies found", and nothing in the
+  message points at the lock screen. The phone had a secure keyguard, so it could not be dismissed
+  over adb. The author unlocked it, and the screen-off timeout was raised for the run and restored
+  afterwards.
+* *`DownloadPipelineInstrumentedTest` failed instead of skipping* when no folder was granted.
+  `assumeTrue` in `setUp` skips before the `lateinit` databases are assigned, and `@After` still
+  runs and touches them. Every earlier device run had a folder granted, so this had never shown.
+  Fixed with `isInitialized` guards, and confirmed on the phone (one failure became seven skips).
+* *Connecting the account does not fetch any feed.* The sync mirrored four subscriptions and 71
+  ledger rows, but every feed stayed unrefreshed (titles still bare URLs, zero episodes) until a
+  manual pull-to-refresh. The only queued job was the periodic refresh, about four hours out.
+  Whether connecting should trigger a refresh is a UX question, not settled here.
+
+*Unexplained, not fixed:* every library module's `connectedDebugAndroidTest` task fails even when
+all its tests pass. AGP's test engine (`com.android.tools.androidtest.testengine`) writes exit code 1
+to `test-result-exit-code.txt` and logs nothing, even with `--debug`. Possibly related to the AGP 9.4.1
+bump in #132; that is unverified. CI does not run this tier, so nothing else would have noticed.

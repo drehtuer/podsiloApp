@@ -44,7 +44,22 @@ class DefaultNamingTemplateEngineTest {
     private fun engine(
         titleCleanupRules: List<TitleCleanupRule> = emptyList(),
         transliterate: Boolean = false,
-    ) = DefaultNamingTemplateEngine(zoneId = utc, titleCleanupRules = titleCleanupRules, transliterate = transliterate)
+        maxComponentBytes: Int = DEFAULT_MAX_COMPONENT_BYTES,
+    ) = DefaultNamingTemplateEngine(
+        zoneId = utc,
+        titleCleanupRules = titleCleanupRules,
+        transliterate = transliterate,
+        maxComponentBytes = maxComponentBytes,
+    )
+
+    private fun DefaultNamingTemplateEngine.file(
+        fileTemplate: String,
+        episode: Episode = episode(),
+        feed: Feed = feed(),
+        contentType: String? = null,
+    ) = resolve(feed, episode, folderTemplate = "{podcast}", fileTemplate = fileTemplate, contentType = contentType)
+
+    private fun String.utf8Bytes() = toByteArray(Charsets.UTF_8).size
 
     @Test
     fun `default templates match the CLAUDE md example`() {
@@ -198,5 +213,110 @@ class DefaultNamingTemplateEngineTest {
             )
 
         assertEquals(guidShort("guid-123"), result.folder)
+    }
+
+    /** CLAUDE.md §6's optional `{description}`, subject to the same sanitising as `{title}`. */
+    @Test
+    fun `description variable is sanitised like the title`() {
+        val result = engine().file("{date}_{description}", episode(description = "Show notes: part 1/2"))
+
+        assertEquals("20260714_Show notes_ part 1_2", result.fileNameWithoutExtension)
+    }
+
+    @Test
+    fun `a missing description falls back to guid_short rather than an empty segment`() {
+        val result = engine().file("{date}_{description}", episode(guid = "guid-no-notes", description = null))
+
+        assertEquals("20260714_${guidShort("guid-no-notes")}", result.fileNameWithoutExtension)
+    }
+
+    @Test
+    fun `an empty template resolves to guid_short, never to an empty component`() {
+        val result = engine().resolve(feed(), episode(guid = "guid-empty"), folderTemplate = "", fileTemplate = "")
+
+        assertEquals(guidShort("guid-empty"), result.folder)
+        assertEquals(guidShort("guid-empty"), result.fileNameWithoutExtension)
+    }
+
+    @Test
+    fun `the response Content-Type decides the extension over the enclosure url`() {
+        val result = engine().file("{title}", contentType = "audio/mp4")
+
+        assertEquals("m4a", result.extension)
+    }
+
+    /**
+     * Two free-text variables share one component's budget. Each gets half, so the pair -- plus the
+     * literal between them, the extension and the collision headroom -- still fits 255 bytes.
+     */
+    @Test
+    fun `two elastic variables share the byte budget and the component still fits`() {
+        val result =
+            engine().file(
+                "{podcast} - {title}",
+                feed = feed(title = "P".repeat(300)),
+                episode = episode(title = "\u00e4".repeat(300)),
+            )
+
+        val name = result.fileNameWithoutExtension
+        assertTrue(name.startsWith("P"))
+        assertTrue(name.contains(" - \u00e4"))
+        val total = name.utf8Bytes() + 1 + result.extension.utf8Bytes() + COLLISION_SUFFIX_RESERVED_BYTES
+        assertTrue("was $total bytes", total <= DEFAULT_MAX_COMPONENT_BYTES)
+    }
+
+    @Test
+    fun `an over-long podcast title is truncated in the folder, leaving collision headroom`() {
+        val result = engine().resolve(feed(title = "x".repeat(400)), episode(), "{podcast}", "{title}")
+
+        assertEquals(DEFAULT_MAX_COMPONENT_BYTES - COLLISION_SUFFIX_RESERVED_BYTES, result.folder.utf8Bytes())
+    }
+
+    /**
+     * Truncation can land just after a space or dot, which is invalid at the end of a FAT/Windows
+     * name. A 20-byte limit leaves the title 11 bytes (20 - 5 headroom - ".mp3"), cutting
+     * "abcdefghij klm" right after the space.
+     */
+    @Test
+    fun `a trailing space exposed by truncation is stripped`() {
+        val result = engine(maxComponentBytes = 20).file("{title}", episode(title = "abcdefghij klm"))
+
+        assertEquals("abcdefghij", result.fileNameWithoutExtension)
+    }
+
+    /**
+     * When the fixed parts eat the whole budget, the title is truncated to nothing -- and must then
+     * fall back to guid_short rather than leaving a name that ends in a bare separator.
+     */
+    @Test
+    fun `a title squeezed to nothing falls back to guid_short`() {
+        val sixBytes = episode(title = "\u65e5\u672c", guid = "guid-squeezed")
+        val result = engine(maxComponentBytes = 20).file("{date}_{title}", sixBytes)
+
+        assertEquals("20260714_${guidShort("guid-squeezed")}", result.fileNameWithoutExtension)
+    }
+
+    /**
+     * Regression: `{date:pattern}` output was never sanitised, so an ordinary user pattern put a path
+     * separator or a colon -- illegal on FAT32/exFAT (CLAUDE.md §6) -- straight into the filename.
+     */
+    @Test
+    fun `a date pattern producing illegal characters is sanitised`() {
+        val pubDate = Instant.parse("2026-07-14T09:30:00Z").toEpochMilli()
+        listOf(
+            "{date:yyyy/MM/dd}_{title}" to "2026_07_14_Warum Hamburg immer regnet",
+            "{date:yyyyMMdd HH:mm}_{title}" to "20260714 09_30_Warum Hamburg immer regnet",
+        ).forEach { (template, expected) ->
+            val resolved = engine().file(template, episode(pubDate = pubDate))
+            assertEquals(template, expected, resolved.fileNameWithoutExtension)
+        }
+    }
+
+    /** Regression: `{date:}` formatted to "", producing exactly the `_Title.mp3` CLAUDE.md §6 forbids. */
+    @Test
+    fun `an empty date pattern degrades to the sortable placeholder, not an empty leading segment`() {
+        val result = engine().file("{date:}_{title}")
+
+        assertEquals("${FALLBACK_DATE}_Warum Hamburg immer regnet", result.fileNameWithoutExtension)
     }
 }

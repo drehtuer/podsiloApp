@@ -114,9 +114,15 @@ class DefaultNamingTemplateEngine(
                             sanitizeComponent(episode.description.orEmpty(), transliterate),
                             elastic = true,
                         )
+                    // Sanitised like any other value: a user's `{date:yyyy/MM/dd}` or `{date:HH:mm}` is
+                    // an ordinary pattern whose output is illegal on FAT32/exFAT (CLAUDE.md §6), and an
+                    // empty `{date:}` must not become the empty leading segment §6 forbids.
                     "date" ->
                         ResolvedToken(
-                            formatDate(episode.pubDate, zoneId, token.pattern ?: DEFAULT_DATE_PATTERN),
+                            sanitizeComponent(
+                                formatDate(episode.pubDate, zoneId, token.pattern ?: DEFAULT_DATE_PATTERN),
+                                transliterate = false,
+                            ).ifEmpty { FALLBACK_DATE },
                             elastic = false,
                         )
                     "guid_short" -> ResolvedToken(guidShort(episode.episodeKey), elastic = false)

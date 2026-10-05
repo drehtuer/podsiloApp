@@ -18,7 +18,12 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.net.ConnectException
+import java.net.InetAddress
+import java.net.Socket
+import java.net.SocketAddress
 import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
 
 class RetrofitGpodderClientTest {
     private lateinit var server: MockWebServer
@@ -470,13 +475,27 @@ class RetrofitGpodderClientTest {
             assertNull("nothing came back, so there is no status", failure.statusCode)
         }
 
+    /**
+     * The connection is refused by an injected [SocketFactory] rather than by dialling a closed
+     * port. A closed `localhost` port is not refused everywhere: under WSL2's mirrored networking it
+     * is silently dropped, the connect times out, and the same test then reports TIMED_OUT — host
+     * configuration deciding the result of a Tier 1 test (CLAUDE.md §7: deterministic, offline).
+     * The refusal still surfaces through OkHttp's real connect path as a `ConnectException`, which
+     * is exactly what `guarded` classifies.
+     */
     @Test
     fun `an unreachable server is UNREACHABLE and names no credential`() =
         runBlocking {
+            val refusing =
+                OkHttpClient
+                    .Builder()
+                    .socketFactory(ConnectionRefusingSocketFactory)
+                    .build()
             val unreachable =
                 RetrofitGpodderClient.create(
-                    baseUrl = "http://localhost:1",
+                    baseUrl = server.url("/").toString(),
                     credentials = GpodderCredentials("alice", "app-password"),
+                    okHttpClient = refusing,
                 )
 
             val failure = unreachable.fetchSubscriptions(null).failure()
@@ -491,4 +510,40 @@ class RetrofitGpodderClientTest {
 
     private val playAction =
         EpisodeAction("p", "e", null, EpisodeActionType.PLAY, "2026-07-14T09:00:00")
+}
+
+/** Hands OkHttp sockets that refuse every connect, as a closed port on a normal host would. */
+private object ConnectionRefusingSocketFactory : SocketFactory() {
+    private class RefusingSocket : Socket() {
+        override fun connect(
+            endpoint: SocketAddress?,
+            timeout: Int,
+        ): Unit = throw ConnectException("Connection refused")
+    }
+
+    override fun createSocket(): Socket = RefusingSocket()
+
+    override fun createSocket(
+        host: String?,
+        port: Int,
+    ): Socket = RefusingSocket()
+
+    override fun createSocket(
+        host: String?,
+        port: Int,
+        localHost: InetAddress?,
+        localPort: Int,
+    ): Socket = RefusingSocket()
+
+    override fun createSocket(
+        host: InetAddress?,
+        port: Int,
+    ): Socket = RefusingSocket()
+
+    override fun createSocket(
+        address: InetAddress?,
+        port: Int,
+        localAddress: InetAddress?,
+        localPort: Int,
+    ): Socket = RefusingSocket()
 }

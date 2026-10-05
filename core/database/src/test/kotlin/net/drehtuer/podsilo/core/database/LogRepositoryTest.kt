@@ -80,18 +80,6 @@ class LogRepositoryTest {
         }
 
     @Test
-    fun `a message differing only in numbers still collapses`() =
-        runTest {
-            // The whole point of normalising: the same failure never carries the same text twice —
-            // a fresh timeout, a fresh port, a rotating CDN host. An identity over the raw message
-            // would collapse nothing and the buffer would evict every one-off error within a day.
-            log.record(feedTimeout("Feed server did not respond (timeout after 30012 ms)"))
-            log.record(feedTimeout("Feed server did not respond (timeout after 29998 ms)"))
-
-            assertEquals(1, log.observe(null).first().size)
-        }
-
-    @Test
     fun `different feeds do not collapse together`() =
         runTest {
             log.record(feedTimeout(feedUrl = "https://a.example/feed.xml"))
@@ -145,8 +133,14 @@ class LogRepositoryTest {
         }
 
     @Test
-    fun `normalising collapses messages that differ only in numbers, even unrelated ones`() =
+    fun `a message differing only in numbers collapses, even when the failures are unrelated`() =
         runTest {
+            // The whole point of normalising: the same failure never carries the same text twice —
+            // a fresh timeout, a fresh port, a rotating CDN host. An identity over the raw message
+            // would collapse nothing and the buffer would evict every one-off error within a day.
+            log.record(feedTimeout("Feed server did not respond (timeout after 30012 ms)"))
+            log.record(feedTimeout("Feed server did not respond (timeout after 29998 ms)"))
+
             // A deliberate over-reach, recorded so it is not discovered as a surprise: the identity
             // folds *all* digits, so "attempt 1 of 3" and "attempt 2 of 3" are one entry — which is
             // what we want — but so are two genuinely different failures whose text happens to
@@ -155,13 +149,13 @@ class LogRepositoryTest {
             log.record(NewLogEntry(category = LogCategory.FEED, message = "failure 1"))
             log.record(NewLogEntry(category = LogCategory.FEED, message = "failure 2"))
 
-            assertEquals(1, log.observe(null).first().size)
+            assertEquals(listOf(2, 2), log.observe(null).first().map { it.occurrences })
         }
 
     @Test
     fun `the buffer evicts the oldest beyond its cap`() =
         runTest {
-            // Distinct feeds, not distinct numbers — see the test above for why numbering them would
+            // Distinct feeds, not distinct numbers — see the normalising test for why numbering them would
             // have produced exactly one collapsed row and proved nothing about eviction.
             repeat(LogDao.MAX_ENTRIES + 20) { index ->
                 now = now.plusSeconds(1)

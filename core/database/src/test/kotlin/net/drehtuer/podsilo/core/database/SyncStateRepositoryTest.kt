@@ -26,24 +26,18 @@ class SyncStateRepositoryTest : RoomTestBase() {
         }
 
     @Test
-    fun `save persists the server timestamp verbatim and round-trips`() =
+    fun `save persists the server timestamp verbatim into a single row - later saves overwrite`() =
         runTest {
             val repo = SyncStateRepositoryImpl(db.syncStateDao(), deviceIdGenerator = { "fixed" })
             repo.get()
 
             repo.save(SyncState(lastEpisodeActionSyncTs = 1_752_483_600, deviceId = "fixed"))
+            repo.save(SyncState(lastEpisodeActionSyncTs = 1_752_483_700, deviceId = "fixed"))
 
-            assertEquals(1_752_483_600, repo.get().lastEpisodeActionSyncTs)
-        }
-
-    @Test
-    fun `save keeps a single row - later saves overwrite, not accumulate`() =
-        runTest {
-            val repo = SyncStateRepositoryImpl(db.syncStateDao(), deviceIdGenerator = { "fixed" })
-
-            repo.save(SyncState(lastEpisodeActionSyncTs = 1, deviceId = "fixed"))
-            repo.save(SyncState(lastEpisodeActionSyncTs = 2, deviceId = "fixed"))
-
-            assertEquals(2, repo.get().lastEpisodeActionSyncTs)
+            assertEquals(SyncState(lastEpisodeActionSyncTs = 1_752_483_700, deviceId = "fixed"), repo.get())
+            db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM sync_state").use { cursor ->
+                cursor.moveToFirst()
+                assertEquals("a singleton, not a history", 1, cursor.getInt(0))
+            }
         }
 }

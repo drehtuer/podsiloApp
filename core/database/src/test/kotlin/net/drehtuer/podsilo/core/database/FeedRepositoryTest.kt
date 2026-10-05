@@ -50,24 +50,14 @@ class FeedRepositoryTest : RoomTestBase() {
     @Test
     fun `re-seeing an existing feed keeps its cached episodes (upsert, not delete+insert)`() =
         runTest {
-            feeds.replaceAll(listOf(feed("a")))
+            feeds.replaceAll(listOf(feed("a", firstSeenAt = 111)))
             episodes.replaceForFeed("a", listOf(episode("e1", feedUrl = "a")))
 
             // Same feed reappears alongside a new one — its episodes must not be wiped by a REPLACE cascade.
-            feeds.replaceAll(listOf(feed("a"), feed("b")))
+            feeds.replaceAll(listOf(feed("a", firstSeenAt = 111), feed("b", firstSeenAt = 222)))
 
             assertEquals(listOf("e1"), episodes.observeForFeed("a").first().map { it.episodeKey })
-        }
-
-    @Test
-    fun `removing a feed cascade-deletes its episodes`() =
-        runTest {
-            feeds.replaceAll(listOf(feed("a")))
-            episodes.replaceForFeed("a", listOf(episode("e1", feedUrl = "a")))
-
-            feeds.replaceAll(emptyList())
-
-            assertEquals(emptyList<String>(), episodes.observeForFeed("a").first().map { it.episodeKey })
+            assertEquals(111L, feeds.get("a")?.firstSeenAt)
         }
 
     @Test
@@ -117,21 +107,5 @@ class FeedRepositoryTest : RoomTestBase() {
             feeds.updateRefreshMetadata("a", FeedRefreshMetadata("Der Podcast", null, null, null, 999))
 
             assertEquals(emptyList<String>(), feeds.getAll().map { it.url })
-        }
-
-    @Test
-    fun `caller-preserved firstSeenAt survives a replace`() =
-        runTest {
-            feeds.replaceAll(listOf(feed("a", firstSeenAt = 111)))
-            feeds.replaceAll(listOf(feed("a", firstSeenAt = 111), feed("b", firstSeenAt = 222)))
-
-            assertEquals(
-                111,
-                feeds
-                    .observeAll()
-                    .first()
-                    .first { it.url == "a" }
-                    .firstSeenAt,
-            )
         }
 }

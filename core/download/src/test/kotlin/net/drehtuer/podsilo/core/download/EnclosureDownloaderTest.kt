@@ -120,23 +120,15 @@ class EnclosureDownloaderTest {
         }
 
     @Test
-    fun `a 404 is reported as an HTTP error`() =
+    fun `a non-2xx is an HTTP error carrying its code - retry classification is the caller's`() =
         runBlocking {
-            server.enqueue(MockResponse().setResponseCode(404))
+            for (code in listOf(404, 500)) {
+                server.enqueue(MockResponse().setResponseCode(code))
 
-            val result = downloader.download(url(), destination())
+                val result = downloader.download(url(), destination("cache-$code"))
 
-            assertEquals(404, (result as EnclosureDownloadResult.HttpError).code)
-        }
-
-    @Test
-    fun `a 500 is reported as an HTTP error too - retry classification is the caller's`() =
-        runBlocking {
-            server.enqueue(MockResponse().setResponseCode(500))
-
-            val result = downloader.download(url(), destination())
-
-            assertEquals(500, (result as EnclosureDownloadResult.HttpError).code)
+                assertEquals(code, (result as EnclosureDownloadResult.HttpError).code)
+            }
         }
 
     @Test

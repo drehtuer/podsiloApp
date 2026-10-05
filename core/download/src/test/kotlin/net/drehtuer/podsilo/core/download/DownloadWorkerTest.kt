@@ -203,18 +203,6 @@ class DownloadWorkerTest {
         }
 
     @Test
-    fun `an already-downloaded episode is not downloaded a second time`() =
-        runBlocking {
-            ledger.upsert(queuedRow(state = LedgerState.DOWNLOADED, writtenFileName = "already there.mp3"))
-            ledger.writes.clear()
-
-            buildWorker().doWork()
-
-            assertEquals(0, server.requestCount)
-            assertEquals("already there.mp3", ledger.get(EPISODE_KEY)?.writtenFileName)
-        }
-
-    @Test
     fun `the user-requested flag is the only way past the terminal-row refusal`() =
         runBlocking {
             // The half of decisions/0012 that keeps the no-auto-download invariant provable.
@@ -224,6 +212,8 @@ class DownloadWorkerTest {
 
             buildWorker(userRequested = false).doWork()
             assertEquals("without the flag, nothing is fetched", 0, server.requestCount)
+            assertEquals("and the terminal row is left alone", emptyList<EpisodeLedgerRow>(), ledger.writes)
+            assertEquals("already there.mp3", ledger.get(EPISODE_KEY)?.writtenFileName)
 
             server.enqueue(MockResponse().setResponseCode(200).setBody(mp3Body()))
             buildWorker(userRequested = true).doWork()

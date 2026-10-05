@@ -78,12 +78,15 @@ class FeedFetcherTest {
         runBlocking {
             server.enqueue(MockResponse().setResponseCode(304))
 
-            fetcher().fetch(
-                feedUrl(),
-                httpEtag = "\"abc123\"",
-                httpLastModified = "Tue, 14 Jul 2026 09:00:00 GMT",
-            )
+            val result =
+                fetcher().fetch(
+                    feedUrl(),
+                    httpEtag = "\"abc123\"",
+                    httpLastModified = "Tue, 14 Jul 2026 09:00:00 GMT",
+                )
 
+            // A 304 is NotModified: no body to parse, the cached episodes stand.
+            assertEquals(FeedFetchResult.NotModified, result)
             val request = server.takeRequest()
             assertEquals("\"abc123\"", request.getHeader("If-None-Match"))
             assertEquals("Tue, 14 Jul 2026 09:00:00 GMT", request.getHeader("If-Modified-Since"))
@@ -99,16 +102,6 @@ class FeedFetcherTest {
             val request = server.takeRequest()
             assertEquals("\"only-etag\"", request.getHeader("If-None-Match"))
             assertNull(request.getHeader("If-Modified-Since"))
-        }
-
-    @Test
-    fun `a 304 yields NotModified and no body is parsed`() =
-        runBlocking {
-            server.enqueue(MockResponse().setResponseCode(304))
-
-            val result = fetcher().fetch(feedUrl(), httpEtag = "\"abc123\"")
-
-            assertEquals(FeedFetchResult.NotModified, result)
         }
 
     @Test
@@ -141,23 +134,16 @@ class FeedFetcherTest {
         }
 
     @Test
-    fun `a 404 yields HttpError carrying the status code`() =
+    fun `a non-2xx other than 304 yields HttpError carrying the status code rather than throwing`() =
         runBlocking {
-            server.enqueue(MockResponse().setResponseCode(404))
+            // The code is what lets FeedRefresher tell a gone feed (404) from one worth retrying (5xx).
+            for (code in listOf(404, 500)) {
+                server.enqueue(MockResponse().setResponseCode(code))
 
-            val result = fetcher().fetch(feedUrl())
+                val result = fetcher().fetch(feedUrl())
 
-            assertEquals(404, (result as FeedFetchResult.HttpError).code)
-        }
-
-    @Test
-    fun `a 500 yields HttpError rather than throwing`() =
-        runBlocking {
-            server.enqueue(MockResponse().setResponseCode(500))
-
-            val result = fetcher().fetch(feedUrl())
-
-            assertEquals(500, (result as FeedFetchResult.HttpError).code)
+                assertEquals(code, (result as FeedFetchResult.HttpError).code)
+            }
         }
 
     @Test
@@ -197,5 +183,5 @@ class FeedFetcherTest {
 
     // The fetch -> parse composition test lives in FeedXmlParserTest instead: it drives rssparser,
     // which needs the Robolectric runner (`architecture.adoc` §7). Keeping it out of this class means
-    // these 12 pure-HTTP tests stay on the plain JVM runner.
+    // these pure-HTTP tests stay on the plain JVM runner.
 }

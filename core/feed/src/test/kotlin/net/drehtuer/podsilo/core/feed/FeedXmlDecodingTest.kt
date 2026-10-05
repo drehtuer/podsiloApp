@@ -11,19 +11,13 @@ private val ISO_8859_1_XML =
 
 class FeedXmlDecodingTest {
     @Test
-    fun `defaults to utf-8 when no encoding is declared`() {
-        val xml = "<?xml version=\"1.0\"?><rss><channel><title>Über den Wolken</title></channel></rss>"
-        val bytes = xml.toByteArray(Charsets.UTF_8)
+    fun `defaults to utf-8 when no encoding is declared, with or without an xml declaration`() {
+        val withProlog = "<?xml version=\"1.0\"?><rss><channel><title>Über den Wolken</title></channel></rss>"
+        val withoutProlog = "<rss><channel><title>Über den Wolken</title></channel></rss>"
 
-        assertTrue(decodeFeedXml(bytes).contains("Über den Wolken"))
-    }
-
-    @Test
-    fun `defaults to utf-8 when there is no xml declaration at all`() {
-        val xml = "<rss><channel><title>Über den Wolken</title></channel></rss>"
-        val bytes = xml.toByteArray(Charsets.UTF_8)
-
-        assertTrue(decodeFeedXml(bytes).contains("Über den Wolken"))
+        listOf(withProlog, withoutProlog).forEach { xml ->
+            assertTrue(xml, decodeFeedXml(xml.toByteArray(Charsets.UTF_8)).contains("Über den Wolken"))
+        }
     }
 
     @Test
@@ -61,20 +55,5 @@ class FeedXmlDecodingTest {
         val bytes = xml.toByteArray(Charsets.UTF_8)
 
         assertTrue(decodeFeedXml(bytes).contains("Title"))
-    }
-
-    @Test
-    fun `the real iso-8859-1 fixture round-trips correctly`() {
-        val bytes =
-            javaClass.classLoader
-                ?.getResourceAsStream("feeds/wrong_encoding_iso_8859_1.xml")
-                ?.use { it.readBytes() }
-        requireNotNull(bytes)
-
-        val decoded = decodeFeedXml(bytes)
-
-        assertTrue(decoded.contains("Über den Wolken"))
-        assertTrue(decoded.contains("Käse"))
-        assertTrue(decoded.contains("Brötchen"))
     }
 }

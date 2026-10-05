@@ -246,23 +246,25 @@ class RetrofitGpodderClientTest {
         }
 
     @Test
-    fun `lowercase action types from opodsync are parsed`() =
+    fun `lowercase action types from opodsync are parsed, and a missing guid stays null`() =
         runBlocking {
+            // opodsync omits `guid` (and the playback fields) rather than sending them empty; that
+            // must not fail the page.
             enqueueJson(
                 """{"actions":[{"podcast":"p","episode":"e","action":"play",
                |"timestamp":"2026-07-14T09:00:00Z"}],"timestamp":9}
                 """.trimMargin(),
             )
 
-            assertEquals(
-                EpisodeActionType.PLAY,
+            val action =
                 client
                     .fetchEpisodeActions(0)
                     .getOrThrow()
                     .actions
                     .single()
-                    .action,
-            )
+
+            assertEquals(EpisodeActionType.PLAY, action.action)
+            assertNull(action.guid)
         }
 
     @Test
@@ -311,25 +313,6 @@ class RetrofitGpodderClientTest {
         }
 
     @Test
-    fun `a missing guid stays null rather than failing the page`() =
-        runBlocking {
-            enqueueJson(
-                """{"actions":[{"podcast":"p","episode":"e","action":"PLAY",
-               |"timestamp":"2026-07-14T09:00:00Z"}],"timestamp":9}
-                """.trimMargin(),
-            )
-
-            assertNull(
-                client
-                    .fetchEpisodeActions(0)
-                    .getOrThrow()
-                    .actions
-                    .single()
-                    .guid,
-            )
-        }
-
-    @Test
     fun `an unrecognised action type is dropped without failing the whole page`() =
         runBlocking {
             enqueueJson(
@@ -361,49 +344,50 @@ class RetrofitGpodderClientTest {
         return thrown as GpodderException
     }
 
+    /**
+     * The status-code classification, once per endpoint: all three calls share `asFailure`, but a GET
+     * reaches it through `bodyOrFail` and the POST without reading a body, so each path is pinned.
+     *
+     * 401 and 403 are a wrong or revoked app password — still wrong next time. 5xx is a broken server
+     * rather than an absent one, worth a retry. 404 is what a Nextcloud *without* the gpoddersync app
+     * answers: retrying it forever would bury the one entry that explains why nothing ever syncs.
+     */
     @Test
-    fun `a 401 on post is UNAUTHORIZED and carries the status code`() =
+    fun `non-2xx statuses map onto a typed, correctly retryable failure on every endpoint`() =
         runBlocking {
-            server.enqueue(MockResponse().setResponseCode(401))
+            data class Case(
+                val code: Int,
+                val failure: GpodderFailure,
+                val retryable: Boolean,
+            )
+            val cases =
+                listOf(
+                    Case(401, GpodderFailure.UNAUTHORIZED, retryable = false),
+                    Case(403, GpodderFailure.UNAUTHORIZED, retryable = false),
+                    Case(404, GpodderFailure.REJECTED, retryable = false),
+                    Case(409, GpodderFailure.REJECTED, retryable = false),
+                    Case(500, GpodderFailure.SERVER_ERROR, retryable = true),
+                    Case(503, GpodderFailure.SERVER_ERROR, retryable = true),
+                )
+            val calls: List<Pair<String, suspend () -> Result<*>>> =
+                listOf(
+                    "fetchSubscriptions" to { client.fetchSubscriptions(null) },
+                    "fetchEpisodeActions" to { client.fetchEpisodeActions(0) },
+                    "postEpisodeActions" to { client.postEpisodeActions(listOf(playAction)) },
+                )
 
-            val failure = client.postEpisodeActions(listOf(playAction)).failure()
+            for (case in cases) {
+                for ((name, call) in calls) {
+                    server.enqueue(MockResponse().setResponseCode(case.code))
 
-            assertEquals(GpodderFailure.UNAUTHORIZED, failure.failure)
-            assertEquals(401, failure.statusCode)
-            assertFalse("a wrong password is still wrong next time", failure.failure.retryable)
-        }
+                    val failure = call().failure()
 
-    @Test
-    fun `a 403 on post is UNAUTHORIZED too`() =
-        runBlocking {
-            server.enqueue(MockResponse().setResponseCode(403))
-
-            assertEquals(GpodderFailure.UNAUTHORIZED, client.postEpisodeActions(listOf(playAction)).failure().failure)
-        }
-
-    @Test
-    fun `a 500 on post is a retryable SERVER_ERROR rather than a thrown exception`() =
-        runBlocking {
-            server.enqueue(MockResponse().setResponseCode(500))
-
-            val failure = client.postEpisodeActions(listOf(playAction)).failure()
-
-            assertEquals(GpodderFailure.SERVER_ERROR, failure.failure)
-            assertEquals(500, failure.statusCode)
-            assertTrue("the server is broken, not absent", failure.failure.retryable)
-        }
-
-    @Test
-    fun `a 404 on post is REJECTED, not a server error`() =
-        runBlocking {
-            // What a Nextcloud without the gpoddersync app answers. Retrying it forever would bury
-            // the one entry that explains why nothing ever syncs.
-            server.enqueue(MockResponse().setResponseCode(404))
-
-            val failure = client.postEpisodeActions(listOf(playAction)).failure()
-
-            assertEquals(GpodderFailure.REJECTED, failure.failure)
-            assertFalse(failure.failure.retryable)
+                    val label = "HTTP ${case.code} on $name"
+                    assertEquals(label, case.failure, failure.failure)
+                    assertEquals(label, case.code, failure.statusCode)
+                    assertEquals(label, case.retryable, failure.failure.retryable)
+                }
+            }
         }
 
     @Test
@@ -432,17 +416,6 @@ class RetrofitGpodderClientTest {
 
             assertEquals(GpodderFailure.UNAUTHORIZED, failure.failure)
             assertEquals(401, failure.statusCode)
-        }
-
-    @Test
-    fun `a 500 on a GET is a retryable SERVER_ERROR`() =
-        runBlocking {
-            server.enqueue(MockResponse().setResponseCode(500))
-
-            val failure = client.fetchEpisodeActions(0).failure()
-
-            assertEquals(GpodderFailure.SERVER_ERROR, failure.failure)
-            assertTrue(failure.failure.retryable)
         }
 
     @Test

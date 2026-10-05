@@ -8,50 +8,35 @@ import org.junit.Test
 
 class ItunesDurationTest {
     @Test
-    fun `plain seconds`() {
-        assertEquals(3_600_000L, parseItunesDuration("3600"))
+    fun `the three shapes the podcast namespace allows are parsed to milliseconds`() {
+        val cases =
+            mapOf(
+                "3600" to 3_600_000L,
+                "32:15" to (32 * 60 + 15) * 1000L,
+                "01:32:15" to ((1 * 60 + 32) * 60 + 15) * 1000L,
+                // Whitespace around the value is trimmed, not treated as garbage.
+                "  3600  " to 3_600_000L,
+            )
+
+        cases.forEach { (raw, expected) -> assertEquals("'$raw'", expected, parseItunesDuration(raw)) }
     }
 
+    /** `itunes:duration` is notoriously unreliable; anything unusable is null, never an invented value. */
     @Test
-    fun `minutes and seconds`() {
-        assertEquals((32 * 60 + 15) * 1000L, parseItunesDuration("32:15"))
-    }
+    fun `anything unusable yields null rather than a made-up duration`() {
+        val unusable =
+            listOf(
+                null,
+                "",
+                "   ",
+                "not a duration",
+                "12:ab",
+                // Too many components.
+                "1:02:03:04",
+                // A negative value is not a duration.
+                "-5",
+            )
 
-    @Test
-    fun `hours minutes and seconds`() {
-        val expected = ((1 * 60 + 32) * 60 + 15) * 1000L
-        assertEquals(expected, parseItunesDuration("01:32:15"))
-    }
-
-    @Test
-    fun `null input yields null`() {
-        assertNull(parseItunesDuration(null))
-    }
-
-    @Test
-    fun `empty or blank input yields null`() {
-        assertNull(parseItunesDuration(""))
-        assertNull(parseItunesDuration("   "))
-    }
-
-    @Test
-    fun `garbage input yields null, never invented`() {
-        assertNull(parseItunesDuration("not a duration"))
-        assertNull(parseItunesDuration("12:ab"))
-    }
-
-    @Test
-    fun `too many components yields null`() {
-        assertNull(parseItunesDuration("1:02:03:04"))
-    }
-
-    @Test
-    fun `a negative value yields null rather than a negative duration`() {
-        assertNull(parseItunesDuration("-5"))
-    }
-
-    @Test
-    fun `whitespace around the value is trimmed`() {
-        assertEquals(3_600_000L, parseItunesDuration("  3600  "))
+        unusable.forEach { raw -> assertNull("'$raw'", parseItunesDuration(raw)) }
     }
 }

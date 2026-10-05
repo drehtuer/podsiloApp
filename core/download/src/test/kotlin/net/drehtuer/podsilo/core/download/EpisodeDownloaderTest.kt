@@ -212,16 +212,6 @@ class EpisodeDownloaderTest {
             assertTrue(target.delivered("Der Podcast", delivered.fileName).isFile)
         }
 
-    @Test
-    fun `a 404 fails without retrying`() =
-        runBlocking {
-            server.enqueue(MockResponse().setResponseCode(404))
-
-            val outcome = downloader().download(DownloadRequest(feed(), episode(), NamingSettings()))
-
-            assertFalse((outcome as DownloadOutcome.Failed).retryable)
-        }
-
     /**
      * The classification the whole `CLEARTEXT_BLOCKED` value exists for: **not retryable**, and its
      * own cause rather than `NETWORK`. Reported as a network error it retried on a backoff for ever
@@ -252,14 +242,33 @@ class EpisodeDownloaderTest {
             assertEquals(emptyList<String>(), target.deliveries)
         }
 
+    /**
+     * What is worth WorkManager's backoff and what is not: 5xx, 408 and 429 are the server saying
+     * "later"; any other 4xx (a pulled episode, an expired signed URL) fails identically on retry.
+     * Nothing reaches the user's folder in any case.
+     */
     @Test
-    fun `a 503 fails retryably and keeps nothing in the user's folder`() =
+    fun `HTTP failures are classified into retryable and permanent, with a cause`() =
         runBlocking {
-            server.enqueue(MockResponse().setResponseCode(503))
+            data class Case(
+                val code: Int,
+                val retryable: Boolean,
+                val cause: ErrorCause,
+            )
+            val cases =
+                listOf(
+                    Case(404, retryable = false, cause = ErrorCause.SERVER),
+                    Case(503, retryable = true, cause = ErrorCause.SERVER),
+                )
+            for (case in cases) {
+                server.enqueue(MockResponse().setResponseCode(case.code))
+                val outcome = downloader().download(DownloadRequest(feed(), episode(), NamingSettings()))
 
-            val outcome = downloader().download(DownloadRequest(feed(), episode(), NamingSettings()))
+                val failed = outcome as DownloadOutcome.Failed
 
-            assertTrue((outcome as DownloadOutcome.Failed).retryable)
+                assertEquals("HTTP ${case.code}", case.retryable, failed.retryable)
+                assertEquals("HTTP ${case.code}", case.cause, failed.cause)
+            }
             assertEquals(emptyList<String>(), target.deliveries)
         }
 

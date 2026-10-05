@@ -7,6 +7,7 @@ import net.drehtuer.podsilo.core.model.port.EpisodeAction
 import net.drehtuer.podsilo.core.model.port.EpisodeActionType
 import net.drehtuer.podsilo.core.model.port.GpodderException
 import net.drehtuer.podsilo.core.model.port.GpodderFailure
+import net.drehtuer.podsilo.core.model.port.NextcloudCredentials
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -18,12 +19,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import java.net.ConnectException
-import java.net.InetAddress
-import java.net.Socket
-import java.net.SocketAddress
 import java.util.concurrent.TimeUnit
-import javax.net.SocketFactory
 
 class RetrofitGpodderClientTest {
     private lateinit var server: MockWebServer
@@ -429,6 +425,22 @@ class RetrofitGpodderClientTest {
             assertFalse("the same unreadable answer comes back next time", failure.failure.retryable)
         }
 
+    /**
+     * The `bodyOrFail` branch nothing else reaches: a 2xx that carries no body at all. Reading it as
+     * an empty subscription list would make the mirror delete every local feed (CLAUDE.md §5 —
+     * the local `Feed` table is wholesale-replaced from this answer).
+     */
+    @Test
+    fun `a 2xx with no body is MALFORMED, not an empty subscription list`() =
+        runBlocking {
+            server.enqueue(MockResponse().setResponseCode(204))
+
+            val failure = client.fetchSubscriptions(null).failure()
+
+            assertEquals(GpodderFailure.MALFORMED, failure.failure)
+            assertEquals(204, failure.statusCode)
+        }
+
     @Test
     fun `a read timeout is TIMED_OUT rather than UNREACHABLE`() =
         runBlocking {
@@ -449,7 +461,7 @@ class RetrofitGpodderClientTest {
         }
 
     /**
-     * The connection is refused by an injected [SocketFactory] rather than by dialling a closed
+     * The connection is refused by an injected socket factory rather than by dialling a closed
      * port. A closed `localhost` port is not refused everywhere: under WSL2's mirrored networking it
      * is silently dropped, the connect times out, and the same test then reports TIMED_OUT — host
      * configuration deciding the result of a Tier 1 test (CLAUDE.md §7: deterministic, offline).
@@ -481,42 +493,31 @@ class RetrofitGpodderClientTest {
             )
         }
 
+    /**
+     * The production entry point. Its one job is to hand the stored account to the client in the
+     * right slots — a swapped username/app-password would authenticate as nobody, and a server URL
+     * taken from anywhere but the account would send the credential to the wrong host.
+     */
+    @Test
+    fun `the factory builds a client for the stored account's server and credentials`() =
+        runBlocking {
+            enqueueJson("""{"add":[],"remove":[],"timestamp":0}""")
+            val factoryClient =
+                RetrofitGpodderClientFactory().create(
+                    NextcloudCredentials(
+                        serverUrl = server.url("/").toString(),
+                        username = "alice",
+                        appPassword = "app-password",
+                    ),
+                )
+
+            factoryClient.fetchSubscriptions(null).getOrThrow()
+
+            val request = server.takeRequest()
+            assertEquals("/index.php/apps/gpoddersync/subscriptions", request.pathOnly())
+            assertEquals("Basic YWxpY2U6YXBwLXBhc3N3b3Jk", request.getHeader("Authorization"))
+        }
+
     private val playAction =
         EpisodeAction("p", "e", null, EpisodeActionType.PLAY, "2026-07-14T09:00:00")
-}
-
-/** Hands OkHttp sockets that refuse every connect, as a closed port on a normal host would. */
-private object ConnectionRefusingSocketFactory : SocketFactory() {
-    private class RefusingSocket : Socket() {
-        override fun connect(
-            endpoint: SocketAddress?,
-            timeout: Int,
-        ): Unit = throw ConnectException("Connection refused")
-    }
-
-    override fun createSocket(): Socket = RefusingSocket()
-
-    override fun createSocket(
-        host: String?,
-        port: Int,
-    ): Socket = RefusingSocket()
-
-    override fun createSocket(
-        host: String?,
-        port: Int,
-        localHost: InetAddress?,
-        localPort: Int,
-    ): Socket = RefusingSocket()
-
-    override fun createSocket(
-        host: InetAddress?,
-        port: Int,
-    ): Socket = RefusingSocket()
-
-    override fun createSocket(
-        address: InetAddress?,
-        port: Int,
-        localAddress: InetAddress?,
-        localPort: Int,
-    ): Socket = RefusingSocket()
 }

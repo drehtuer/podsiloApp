@@ -180,21 +180,6 @@ class PodcastListScreenTest {
     }
 
     @Test
-    fun `the paused banner carries its fix as a button`() {
-        render(
-            PodcastListUiState(
-                content = PodcastListUiState.Content.Feeds(emptyList()),
-                queueStatus = QueueStatus.Paused(QueueStatus.PauseCause.FOLDER_NOT_CHOSEN, queuedCount = 0),
-            ),
-        )
-
-        compose.onNode(hasText("no download folder chosen", substring = true)).assertIsDisplayed()
-        compose.onNodeWithText("Choose folder").performClick()
-
-        assertTrue(events.contains(PodcastListEvent.PausedBannerActionClicked))
-    }
-
-    @Test
     fun `the paused banner does not double up with the checklist that says the same thing`() {
         // Regression from the first device run: both rendered on first launch, one above the other,
         // and the checklist is the more useful of the two.

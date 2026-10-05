@@ -63,9 +63,12 @@ class EpisodeListViewModelTest : EpisodeListTestHarness() {
             val vm = viewModel()
             runCurrent()
 
-            vm.onEvent(EpisodeListEvent.RowClicked("e1"))
-            runCurrent()
+            vm.effect.test {
+                vm.onEvent(EpisodeListEvent.RowClicked("e1"))
+                runCurrent()
 
+                assertEquals(EpisodeListEffect.OpenDetail("e1"), awaitItem())
+            }
             assertTrue("a mis-tap must never queue a download", ledger.writes.isEmpty())
             assertTrue(scheduler.downloads.isEmpty())
         }
@@ -309,7 +312,13 @@ class EpisodeListViewModelTest : EpisodeListTestHarness() {
             )
             val cases =
                 listOf(
-                    Case(ErrorCause.FOLDER_UNAVAILABLE, false, ErrorCause.FOLDER_UNAVAILABLE, false, FailureRemedy.CHOOSE_FOLDER),
+                    Case(
+                        ErrorCause.FOLDER_UNAVAILABLE,
+                        false,
+                        ErrorCause.FOLDER_UNAVAILABLE,
+                        false,
+                        FailureRemedy.CHOOSE_FOLDER,
+                    ),
                     Case(ErrorCause.DISK_FULL, false, ErrorCause.DISK_FULL, false, FailureRemedy.FREE_UP_SPACE),
                     Case(ErrorCause.NETWORK, true, ErrorCause.NETWORK, true, null),
                     Case(null, null, ErrorCause.UNKNOWN, true, null),
@@ -412,9 +421,12 @@ class EpisodeListViewModelTest : EpisodeListTestHarness() {
             val vm = viewModel()
             runCurrent()
 
-            vm.onEvent(EpisodeListEvent.PullToRefresh)
-            runCurrent()
+            vm.effect.test {
+                vm.onEvent(EpisodeListEvent.PullToRefresh)
+                runCurrent()
 
+                assertEquals(EpisodeListEffect.ShowMessage(SnackbarText.Offline), awaitItem())
+            }
             assertTrue("no request is attempted at all", scheduler.refreshes.isEmpty())
             assertEquals("including the sync half", 0, scheduler.syncs)
         }

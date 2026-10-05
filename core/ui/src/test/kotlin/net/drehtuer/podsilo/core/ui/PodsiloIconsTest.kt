@@ -2,9 +2,17 @@
 
 package net.drehtuer.podsilo.core.ui
 
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -19,6 +27,9 @@ import org.robolectric.RobolectricTestRunner
  */
 @RunWith(RobolectricTestRunner::class)
 class PodsiloIconsTest {
+    @get:Rule
+    val compose = createComposeRule()
+
     private val all =
         mapOf(
             "Back" to PodsiloIcons.Back,
@@ -70,5 +81,24 @@ class PodsiloIconsTest {
     @Test
     fun `every icon is distinct`() {
         assertTrue("two names share one glyph", all.values.toSet().size == all.size)
+    }
+
+    /**
+     * The one way an icon reaches the screen, and its contract is the nullable description: `null`
+     * beside its own label must not be announced, an icon-only control must be (`UI.adoc` §12.12).
+     */
+    @Test
+    fun `an icon is announced exactly when it is given a description`() {
+        compose.setContent {
+            Row {
+                PodsiloIcon(PodsiloIcons.Settings, contentDescription = "Settings")
+                PodsiloIcon(PodsiloIcons.Back, contentDescription = null)
+            }
+        }
+
+        compose.onNodeWithContentDescription("Settings").assertIsDisplayed()
+        compose
+            .onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.ContentDescription))
+            .assertCountEquals(1)
     }
 }

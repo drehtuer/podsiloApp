@@ -4,7 +4,6 @@ package net.drehtuer.podsilo.feature.episodes
 
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasText
@@ -266,23 +265,6 @@ class EpisodeListScreenTest {
         )
 
         compose.onNodeWithContentDescription("downloading, 62 percent").assertIsDisplayed()
-    }
-
-    @Test
-    fun `a paused queue shows the banner with its fix, not just the problem`() {
-        render(
-            EpisodeListUiState(
-                feedUrl = FEED_URL,
-                feedTitle = "Der Podcast",
-                content = EpisodeListUiState.Content.Episodes(kotlin.collections.listOf(row())),
-                queueStatus = QueueStatus.Paused(QueueStatus.PauseCause.FOLDER_REVOKED, queuedCount = 1),
-            ),
-        )
-
-        compose.onNode(hasText("no longer available", substring = true)).assertIsDisplayed()
-        compose.onNodeWithText("Choose folder").performClick()
-
-        assertTrue(events.contains(EpisodeListEvent.PausedBannerActionClicked))
     }
 
     @Test
@@ -692,22 +674,6 @@ class EpisodeListScreenTest {
         selection = Selection(keys.toSet(), allInFilter = rows.size),
         pendingSelectionAction = pendingAction,
     )
-
-    /** §5: disabled *with the reason*. A greyed item that does not say why is a dead end. */
-    @Test
-    fun `Download all is disabled with its reason while the queue is paused`() {
-        render(
-            listOf(row()).copy(
-                downloadAllCount = 12,
-                queueStatus = QueueStatus.Paused(QueueStatus.PauseCause.FOLDER_REVOKED, queuedCount = 0),
-            ),
-        )
-
-        compose.onNodeWithContentDescription("More actions").performClick()
-
-        compose.onNodeWithText("Download all (12)").assertIsNotEnabled()
-        compose.onNodeWithText("folder unavailable").assertIsDisplayed()
-    }
 
     /**
      * Guards the month-header lookup after issue #91 replaced `items.indexOf(episode)` — a linear

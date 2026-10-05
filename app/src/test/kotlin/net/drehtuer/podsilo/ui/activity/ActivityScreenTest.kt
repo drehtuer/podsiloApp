@@ -143,28 +143,6 @@ class ActivityScreenTest {
     }
 
     @Test
-    fun `recently downloaded shows the file and offers nothing that would make this a file manager`() {
-        render(
-            ActivityUiState(
-                recent =
-                    listOf(
-                        DeliveredUi(
-                            fileName = "20260630_Hafen-Kran-Kaffee.mp3",
-                            folderLabel = "Der Podcast",
-                            episodeKey = "e1",
-                            feedUrl = "https://example.org/feed.xml",
-                        ),
-                    ),
-            ),
-        )
-
-        compose.onNodeWithText("20260630_Hafen-Kran-Kaffee.mp3").assertIsDisplayed()
-        // README: Podsilo does not delete files, open them, or check whether they still exist.
-        compose.onAllNodes(hasText("Delete", substring = true)).assertCountEquals(0)
-        compose.onAllNodes(hasText("Open", substring = true)).assertCountEquals(0)
-    }
-
-    @Test
     fun `Sync now is disabled offline, with the reason on screen`() {
         render(
             ActivityUiState(
@@ -195,14 +173,16 @@ class ActivityScreenTest {
     }
 
     /**
-     * *Clear list* empties the delivered list and **must not read as deleting anything**.
+     * Recently downloaded shows what was written and nothing that would make S7 a file manager
+     * (README: Podsilo does not delete files, open them, or check whether they still exist).
      *
-     * The list is projected from `DOWNLOADED` ledger rows, which are the record that stops an
-     * episode being fetched again (CLAUDE.md §11) — so the label says "list", and the word "Delete"
-     * must stay absent from this screen for the same reason it always has.
+     * *Clear list* empties the delivered list and **must not read as deleting anything**: the list
+     * is projected from `DOWNLOADED` ledger rows, which are the record that stops an episode being
+     * fetched again (CLAUDE.md §11) — so the label says "list", and the word "Delete" must stay
+     * absent from this screen for the same reason it always has.
      */
     @Test
-    fun `clear list is offered and never called delete`() {
+    fun `recently downloaded shows the file, offers Clear list, and nothing that makes it a file manager`() {
         render(
             ActivityUiState(
                 recent =
@@ -217,10 +197,13 @@ class ActivityScreenTest {
             ),
         )
 
+        compose.onNodeWithText("20260630_Hafen-Kran-Kaffee.mp3").assertIsDisplayed()
+        compose.onAllNodes(hasText("Delete", substring = true)).assertCountEquals(0)
+        compose.onAllNodes(hasText("Open", substring = true)).assertCountEquals(0)
+
         compose.onNodeWithText("Clear list").performClick()
 
         assertTrue(events.contains(ActivityEvent.ClearDeliveredClicked))
-        compose.onAllNodes(hasText("Delete", substring = true)).assertCountEquals(0)
     }
 
     /** Nothing to clear, nothing to offer — an empty list must not show a button that does nothing. */

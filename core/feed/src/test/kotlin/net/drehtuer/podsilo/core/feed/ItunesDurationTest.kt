@@ -35,6 +35,10 @@ class ItunesDurationTest {
                 "1:02:03:04",
                 // A negative value is not a duration.
                 "-5",
+                // Nor is a negative *component*: these used to come back as 55 s and 30 min — a
+                // plausible-looking duration invented from garbage, which CLAUDE.md §5 forbids.
+                "1:-5",
+                "1:-30:00",
             )
 
         unusable.forEach { raw -> assertNull("'$raw'", parseItunesDuration(raw)) }

@@ -23,7 +23,9 @@ fun parseItunesDuration(raw: String?): Long? {
 private fun parseComponents(trimmed: String): List<Long>? {
     val components = trimmed.split(":")
     if (components.size > MAX_COMPONENTS || components.any(String::isBlank)) return null
-    val numbers = components.map { it.toLongOrNull() }
+    // Every component non-negative, not just the total: `1:-30:00` would otherwise sum to a tidy
+    // 30 minutes — a plausible-looking duration invented from garbage.
+    val numbers = components.map { component -> component.toLongOrNull()?.takeIf { it >= 0 } }
     return if (numbers.contains(null)) null else numbers.filterNotNull()
 }
 

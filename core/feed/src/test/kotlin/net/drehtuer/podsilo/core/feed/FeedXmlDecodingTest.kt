@@ -49,11 +49,13 @@ class FeedXmlDecodingTest {
     }
 
     @Test
-    fun `an unrecognised declared charset falls back to utf-8 rather than throwing`() {
-        val xml =
-            """<?xml version="1.0" encoding="not-a-real-charset"?><rss><channel><title>Title</title></channel></rss>"""
-        val bytes = xml.toByteArray(Charsets.UTF_8)
+    fun `an unrecognised or illegal declared charset falls back to utf-8 rather than throwing`() {
+        // Two different exceptions from Charset.forName: a well-formed name nobody supports, and a
+        // name that is not even legal (a space is not allowed in one).
+        listOf("not-a-real-charset", "ISO 8859-1").forEach { declared ->
+            val xml = """<?xml version="1.0" encoding="$declared"?><rss><channel><title>Über</title></channel></rss>"""
 
-        assertTrue(decodeFeedXml(bytes).contains("Title"))
+            assertTrue(declared, decodeFeedXml(xml.toByteArray(Charsets.UTF_8)).contains("Über"))
+        }
     }
 }

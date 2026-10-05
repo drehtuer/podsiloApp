@@ -245,6 +245,7 @@ class EpisodeDownloaderTest {
     /**
      * What is worth WorkManager's backoff and what is not: 5xx, 408 and 429 are the server saying
      * "later"; any other 4xx (a pulled episode, an expired signed URL) fails identically on retry.
+     * 408 is not in the table because OkHttp itself retries it once before the classifier sees it.
      * Nothing reaches the user's folder in any case.
      */
     @Test
@@ -257,7 +258,13 @@ class EpisodeDownloaderTest {
             )
             val cases =
                 listOf(
+                    // An expired signed enclosure URL: "the server refused access" is the useful
+                    // sentence when the fix is a re-sync for a fresh one.
+                    Case(401, retryable = false, cause = ErrorCause.AUTH),
+                    Case(403, retryable = false, cause = ErrorCause.AUTH),
                     Case(404, retryable = false, cause = ErrorCause.SERVER),
+                    Case(429, retryable = true, cause = ErrorCause.SERVER),
+                    Case(500, retryable = true, cause = ErrorCause.SERVER),
                     Case(503, retryable = true, cause = ErrorCause.SERVER),
                 )
             for (case in cases) {
@@ -270,6 +277,70 @@ class EpisodeDownloaderTest {
                 assertEquals("HTTP ${case.code}", case.cause, failed.cause)
             }
             assertEquals(emptyList<String>(), target.deliveries)
+        }
+
+    @Test
+    fun `an unreachable host fails retryably as a network problem`() =
+        runBlocking {
+            val outcome =
+                downloader(enclosureDownloader = EnclosureDownloader(unresolvableHttpClient()))
+                    .download(DownloadRequest(feed(), episode(), NamingSettings()))
+
+            val failed = outcome as DownloadOutcome.Failed
+            assertTrue(failed.retryable)
+            assertEquals(ErrorCause.NETWORK, failed.cause)
+        }
+
+    @Test
+    fun `a cache that cannot be written is a non-retryable disk problem, not a network one`() =
+        runBlocking {
+            enqueueMp3()
+            // A file where the cache directory should be: the partial cannot be opened, exactly
+            // where a full disk or a cleared cache would fail.
+            val notADirectory = temporaryFolder.newFile("cache-is-a-file")
+            val downloader =
+                EpisodeDownloader(
+                    enclosureDownloader = EnclosureDownloader(),
+                    audioTagWriter = AudioTagWriter(),
+                    downloadTarget = target,
+                    cacheDir = notADirectory,
+                    zoneId = ZoneId.of("Europe/Berlin"),
+                )
+
+            val outcome = downloader.download(DownloadRequest(feed(), episode(), NamingSettings()))
+
+            val failed = outcome as DownloadOutcome.Failed
+
+            assertFalse(failed.retryable)
+            assertEquals(ErrorCause.DISK_FULL, failed.cause)
+            assertEquals(emptyList<String>(), target.deliveries)
+        }
+
+    /**
+     * The retry path skips the collision lookup — it reuses the recorded name — so a grant lost
+     * between attempts first shows up at the copy itself. It must still be a folder problem the user
+     * fixes in Settings, not a crash and not a retry.
+     */
+    @Test
+    fun `a grant lost before a retry's copy is a folder failure too`() =
+        runBlocking {
+            enqueueMp3()
+            target.unavailable = DownloadFolderUnavailableException("SD card removed")
+
+            val outcome =
+                downloader().download(
+                    DownloadRequest(
+                        feed = feed(),
+                        episode = episode(),
+                        naming = NamingSettings(),
+                        previousFileName = "20260714_Warum Hamburg immer regnet.mp3",
+                    ),
+                )
+
+            val failed = outcome as DownloadOutcome.Failed
+            assertFalse(failed.retryable)
+            assertEquals(ErrorCause.FOLDER_UNAVAILABLE, failed.cause)
+            assertEquals("SD card removed", failed.reason)
         }
 
     @Test
@@ -367,12 +438,12 @@ class EpisodeDownloaderTest {
             // CLAUDE.md §6: a tagging problem must never lose a successful download, and artwork is
             // the most optional part of tagging.
             enqueueMp3()
-            val downloader = downloader(ArtworkFetcher(OkHttpClient()))
+            val downloader = downloader(ArtworkFetcher(unresolvableHttpClient()))
 
             val outcome =
                 downloader.download(
                     DownloadRequest(
-                        feed = feed().copy(imageUrl = "http://podsilo.invalid/cover.jpg"),
+                        feed = feed().copy(imageUrl = "https://covers.example.org/cover.jpg"),
                         episode = episode(),
                         naming = NamingSettings(),
                     ),

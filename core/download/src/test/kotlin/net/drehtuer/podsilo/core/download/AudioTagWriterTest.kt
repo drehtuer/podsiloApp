@@ -7,6 +7,7 @@ import org.jaudiotagger.tag.FieldKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
@@ -117,5 +118,42 @@ class AudioTagWriterTest {
         val outcome = writer.writeTags(file, tagData().copy(artwork = cover))
 
         assertEquals(TagWriteOutcome.Success, outcome)
+    }
+
+    private fun copyOfFixture(name: String): File {
+        val bytes = requireNotNull(javaClass.classLoader?.getResourceAsStream("audio/$name")?.use { it.readBytes() })
+        return Files.createTempFile("podsilo-tag-test", "." + name.substringAfterLast('.')).toFile().apply {
+            deleteOnExit()
+            writeBytes(bytes)
+        }
+    }
+
+    /**
+     * The only way [TagWriteOutcome.PartialSuccess] is produced from a real file: MP4's track atom
+     * holds a number, so a non-numeric track is refused while every other field still lands. The
+     * refused key is reported, and the write is not abandoned over it (CLAUDE.md §6).
+     */
+    @Test
+    fun `a field the container refuses is reported, and the rest are still written`() {
+        val file = copyOfFixture("silence.m4a")
+
+        val outcome = writer.writeTags(file, tagData().copy(year = "2026", trackNumber = "not a number"))
+
+        assertEquals(TagWriteOutcome.PartialSuccess(listOf(FieldKey.TRACK)), outcome)
+        val tag = AudioFileIO.read(file).tag
+        assertEquals("Warum Hamburg immer regnet", tag.getFirst(FieldKey.TITLE))
+        assertEquals("2026", tag.getFirst(FieldKey.YEAR))
+    }
+
+    /** A file that reads fine but cannot be rewritten fails the *tagging*, as a value — never the download. */
+    @Test
+    fun `a file that cannot be written back is a Failure, not an exception`() {
+        val file = copyOfFixture("silence.m4a")
+        file.setWritable(false)
+        assumeTrue("running as a user who can write read-only files (root?)", !file.canWrite())
+
+        val outcome = writer.writeTags(file, tagData())
+
+        assertTrue("expected Failure, got $outcome", outcome is TagWriteOutcome.Failure)
     }
 }

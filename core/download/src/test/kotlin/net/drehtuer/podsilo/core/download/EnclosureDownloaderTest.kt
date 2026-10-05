@@ -14,6 +14,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -190,6 +191,35 @@ class EnclosureDownloaderTest {
             val result = downloader.download(url(), blocked)
 
             assertTrue("expected a WriteError, got $result", result is EnclosureDownloadResult.WriteError)
+        }
+
+    @Test
+    fun `a host that cannot be reached is a retryable network error, not a crash`() =
+        runBlocking {
+            val result = EnclosureDownloader(unresolvableHttpClient()).download(url(), destination())
+
+            assertTrue("expected a NetworkError, got $result", result is EnclosureDownloadResult.NetworkError)
+        }
+
+    /**
+     * A real full disk rather than a stand-in: Linux's `/dev/full` accepts the open and fails every
+     * write with ENOSPC. Two sizes, because the failure surfaces in two places — a body smaller than
+     * the sink's buffer only fails when it is flushed, a larger one on the write itself — and either
+     * reported as a network error would retry for ever while blaming the server.
+     */
+    @Test
+    fun `a full disk is a write error, whether it fails on write or on flush`() =
+        runBlocking {
+            val full = File("/dev/full")
+            assumeTrue("needs Linux's /dev/full", full.exists() && full.canWrite())
+
+            for (size in listOf(16, 512 * 1024)) {
+                server.enqueue(MockResponse().setResponseCode(200).setBody(Buffer().write(ByteArray(size))))
+
+                val result = downloader.download(url(), full)
+
+                assertTrue("$size bytes: got $result", result is EnclosureDownloadResult.WriteError)
+            }
         }
 
     @Test

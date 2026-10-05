@@ -5,21 +5,33 @@ package net.drehtuer.podsilo.core.download
 import android.content.Context
 import androidx.work.Data
 import androidx.work.ListenableWorker
+import androidx.work.NetworkType
+import androidx.work.ProgressUpdater
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import androidx.work.testing.TestListenableWorkerBuilder
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import net.drehtuer.podsilo.core.model.Episode
 import net.drehtuer.podsilo.core.model.EpisodeLedgerRow
+import net.drehtuer.podsilo.core.model.ErrorCause
 import net.drehtuer.podsilo.core.model.Feed
 import net.drehtuer.podsilo.core.model.LedgerState
 import net.drehtuer.podsilo.core.model.port.LogCategory
+import net.drehtuer.podsilo.core.model.port.NewLogEntry
+import okhttp3.ConnectionSpec
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -33,6 +45,8 @@ import java.io.File
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneId
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 private const val EPISODE_KEY = "guid-1"
 private const val FEED_URL = "https://example.org/feed.xml"
@@ -113,14 +127,17 @@ class DownloadWorkerTest {
         return Buffer().write(bytes)
     }
 
+    @Suppress("LongParameterList") // One knob per collaborator a test needs to break.
     private fun buildWorker(
         episodes: List<Episode> = listOf(episode()),
         feeds: List<Feed> = listOf(feed()),
         userRequested: Boolean = false,
-    ): DownloadWorker {
+        enclosureDownloader: EnclosureDownloader = EnclosureDownloader(),
         // Stable across calls, like the real app's cache dir — a test that builds the worker twice
         // (to compare two runs of the same episode) is exercising exactly the case that matters.
-        val cacheDir = File(temporaryFolder.root, "cache").apply { mkdirs() }
+        cacheDir: File = File(temporaryFolder.root, "cache").apply { mkdirs() },
+        progressUpdater: ProgressUpdater = this.progressUpdater,
+    ): DownloadWorker {
         val factory =
             object : WorkerFactory() {
                 override fun createWorker(
@@ -137,7 +154,7 @@ class DownloadWorkerTest {
                         settingsRepository = FakeSettingsRepository(),
                         episodeDownloader =
                             EpisodeDownloader(
-                                enclosureDownloader = EnclosureDownloader(),
+                                enclosureDownloader = enclosureDownloader,
                                 audioTagWriter = AudioTagWriter(),
                                 downloadTarget = target,
                                 cacheDir = cacheDir,
@@ -384,17 +401,186 @@ class DownloadWorkerTest {
         }
 
     @Test
-    fun `an episode whose feed was unsubscribed mid-flight errors instead of crashing`() =
+    fun `an episode or feed that vanished mid-flight errors instead of crashing`() =
         runBlocking {
-            ledger.upsert(queuedRow())
+            // Both halves of the unsubscribe race: the episode rows pruned, or only the feed row.
+            val cases =
+                listOf(
+                    Triple(emptyList<Episode>(), listOf(feed()), "episode is no longer in any subscribed feed"),
+                    Triple(listOf(episode()), emptyList<Feed>(), "feed is no longer subscribed"),
+                )
+            for ((episodes, feeds, reason) in cases) {
+                ledger.upsert(queuedRow())
 
+                val result = buildWorker(episodes = episodes, feeds = feeds).doWork()
+
+                assertEquals(reason, ListenableWorker.Result.failure(), result)
+                val stored = checkNotNull(ledger.get(EPISODE_KEY))
+                assertEquals(reason, LedgerState.ERROR, stored.state)
+                assertEquals(reason, stored.lastError)
+            }
+            assertEquals("nothing was fetched for an episode that is gone", 0, server.requestCount)
+        }
+
+    @Test
+    fun `a vanished episode with no ledger row writes nothing at all`() =
+        runBlocking {
+            // There is no snapshot to mark ERROR, and inventing a row would put an episode nobody
+            // decided on into the ledger.
             val result = buildWorker(episodes = emptyList()).doWork()
 
             assertEquals(ListenableWorker.Result.failure(), result)
-            val stored = checkNotNull(ledger.get(EPISODE_KEY))
-            assertEquals(LedgerState.ERROR, stored.state)
-            assertEquals("episode is no longer in any subscribed feed", stored.lastError)
+            assertEquals(emptyList<EpisodeLedgerRow>(), ledger.writes)
         }
+
+    /**
+     * The sentence and the filing for each failure cause (`UI.adoc` §11): what S8 shows the user and
+     * under which chip. Disk problems are STORAGE because the fix is elsewhere; everything else that
+     * stops a download is DOWNLOAD.
+     */
+    @Test
+    fun `each failure cause is logged with its own plain sentence and category`() =
+        runBlocking {
+            data class Case(
+                val label: String,
+                val cause: ErrorCause,
+                val category: LogCategory,
+                val sentence: String,
+                val worker: () -> DownloadWorker,
+            )
+            val cases =
+                listOf(
+                    Case("401", ErrorCause.AUTH, LogCategory.DOWNLOAD, "refused access") {
+                        server.enqueue(MockResponse().setResponseCode(401))
+                        buildWorker()
+                    },
+                    Case("dead host", ErrorCause.NETWORK, LogCategory.DOWNLOAD, "did not respond") {
+                        buildWorker(enclosureDownloader = EnclosureDownloader(unresolvableHttpClient()))
+                    },
+                    Case("cleartext", ErrorCause.CLEARTEXT_BLOCKED, LogCategory.DOWNLOAD, "unencrypted http://") {
+                        val tlsOnly = OkHttpClient.Builder().connectionSpecs(listOf(ConnectionSpec.MODERN_TLS)).build()
+                        buildWorker(enclosureDownloader = EnclosureDownloader(tlsOnly))
+                    },
+                    Case("unwritable cache", ErrorCause.DISK_FULL, LogCategory.STORAGE, "not enough space") {
+                        server.enqueue(MockResponse().setResponseCode(200).setBody(mp3Body()))
+                        buildWorker(cacheDir = temporaryFolder.newFile())
+                    },
+                )
+            for (case in cases) {
+                ledger.upsert(queuedRow())
+                log.clear()
+
+                case.worker().doWork()
+
+                val entry = log.recorded.single()
+                assertEquals(case.label, case.category, entry.category)
+                assertTrue("${case.label}: ${entry.message}", entry.message.contains(case.sentence))
+                assertEquals(case.label, case.cause, ledger.get(EPISODE_KEY)?.lastErrorCause)
+            }
+        }
+
+    /**
+     * Issue #47's fix is that the worker publishes progress at all; this pins what it publishes.
+     * With the clock frozen the 1 Hz throttle lets exactly the first tick through, which is also
+     * what proves the throttle is there.
+     */
+    @Test
+    fun `progress is published with the bytes on disk and the total, throttled to one tick`() =
+        runBlocking {
+            val body = mp3Body()
+            val size = body.size
+            server.enqueue(MockResponse().setResponseCode(200).setBody(body))
+            ledger.upsert(queuedRow())
+
+            buildWorker().doWork()
+
+            val update = progressUpdater.updates.single()
+            assertEquals(size, update.getLong(DownloadWorker.KEY_PROGRESS_TOTAL, 0))
+            assertTrue(update.getLong(DownloadWorker.KEY_PROGRESS_BYTES, 0) in 1..size)
+        }
+
+    @Test
+    fun `a server that discloses no length publishes the unknown-total marker, not a missing key`() =
+        runBlocking {
+            // -1 is what the UI reads as "indeterminate"; an absent key would read as "no update yet".
+            server.enqueue(MockResponse().setResponseCode(200).setChunkedBody(mp3Body(), 1024))
+            ledger.upsert(queuedRow())
+
+            buildWorker().doWork()
+
+            assertEquals(
+                DownloadWorker.UNKNOWN_TOTAL,
+                progressUpdater.updates.first().getLong(DownloadWorker.KEY_PROGRESS_TOTAL, 0),
+            )
+        }
+
+    /**
+     * WorkManager stopping the worker (constraints lost, work cancelled) mid-copy. The row must not
+     * sit in DOWNLOADING for ever: it goes back to QUEUED with the attempt count it had, keeps its
+     * recorded file name, and the cancellation is rethrown rather than turned into a result. Nothing
+     * is logged and no sync is asked for — nothing failed and nothing was delivered.
+     *
+     * Cancelled from the outside once the first progress tick proves the copy is under way, rather
+     * than on a timer, so the test does not depend on how fast the host is.
+     */
+    @Test
+    fun `a stopped download hands its row back to QUEUED and lets the cancellation through`() =
+        runBlocking {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .setBody(Buffer().write(ByteArray(512 * 1024)))
+                    .throttleBody(8 * 1024, 100, TimeUnit.MILLISECONDS),
+            )
+            ledger.upsert(queuedRow(writtenFileName = "20260714_earlier name.mp3").copy(attempts = 2))
+            val copying = CompletableDeferred<Unit>()
+            val signalling =
+                object : ProgressUpdater {
+                    override fun updateProgress(
+                        context: Context,
+                        id: UUID,
+                        data: Data,
+                    ): ListenableFuture<Void?> {
+                        copying.complete(Unit)
+                        return Futures.immediateFuture(null)
+                    }
+                }
+
+            // Off this thread: the copy loop blocks on the socket, and the cancel has to reach it.
+            val stopped = async(Dispatchers.IO) { buildWorker(progressUpdater = signalling).doWork() }
+            copying.await()
+            stopped.cancel()
+            stopped.join()
+
+            assertTrue(stopped.isCancelled)
+            val stored = checkNotNull(ledger.get(EPISODE_KEY))
+            assertEquals(LedgerState.QUEUED, stored.state)
+            assertEquals("a stop is not a used-up attempt", 2, stored.attempts)
+            assertEquals("20260714_earlier name.mp3", stored.writtenFileName)
+            assertEquals(0, syncTrigger.requests)
+            assertEquals(emptyList<NewLogEntry>(), log.recorded)
+        }
+
+    @Test
+    fun `a work request carries its episode, needs a network, and is never user-requested by default`() {
+        val request = DownloadWorker.request("guid-1")
+        val input = request.workSpec.input
+
+        assertEquals("guid-1", input.getString(DownloadWorker.KEY_EPISODE_KEY))
+        // The flag that permits re-downloading a terminal row must be opted into by a UI event.
+        assertFalse(input.getBoolean(DownloadWorker.KEY_USER_REQUESTED, true))
+        assertTrue(
+            DownloadWorker
+                .request("guid-1", userRequested = true)
+                .workSpec.input
+                .getBoolean(DownloadWorker.KEY_USER_REQUESTED, false),
+        )
+        assertEquals(NetworkType.CONNECTED, request.workSpec.constraints.requiredNetworkType)
+        // The tag is how S1 and S7 map a WorkInfo back to its episode.
+        assertEquals("guid-1", DownloadWorker.episodeKeyOf(request.tags))
+        assertNull(DownloadWorker.episodeKeyOf(setOf("some-other-tag")))
+        assertNotEquals(DownloadWorker.uniqueWorkName("a"), DownloadWorker.uniqueWorkName("b"))
+    }
 
     @Test
     fun `no episode key in the input data is a permanent failure, not a crash`() =

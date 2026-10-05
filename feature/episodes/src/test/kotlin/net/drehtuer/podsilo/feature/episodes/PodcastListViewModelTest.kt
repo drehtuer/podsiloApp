@@ -263,16 +263,6 @@ class PodcastListViewModelTest {
             assertEquals("nor a sync pass — offline is a precondition, not a failure", 0, scheduler.syncs)
         }
 
-    @Test
-    fun `pull to refresh asks for every feed, not one`() =
-        runTest {
-            val viewModel = viewModel()
-
-            viewModel.onEvent(PodcastListEvent.PullToRefresh)
-
-            assertEquals(listOf<String?>(null), scheduler.refreshes)
-        }
-
     /**
      * Issue #60. `UI.adoc` §4 specifies a sync pass **and** a feed refresh, and only the second
      * one shipped — so the gesture fetched RSS and never touched the action log in either direction.
@@ -281,7 +271,7 @@ class PodcastListViewModelTest {
      * first would fetch the set of feeds the sync is about to replace.
      */
     @Test
-    fun `pull to refresh syncs before it refreshes the feeds`() =
+    fun `pull to refresh syncs, then refreshes every feed rather than one`() =
         runTest {
             val viewModel = viewModel()
 
@@ -289,6 +279,8 @@ class PodcastListViewModelTest {
 
             assertEquals(1, scheduler.syncs)
             assertEquals(listOf("sync", "refresh"), scheduler.order)
+            // `null` is "every feed": S1 refreshes the whole subscription list, S2 only its own.
+            assertEquals(listOf<String?>(null), scheduler.refreshes)
         }
 
     @Test

@@ -61,18 +61,12 @@ class PodsiloIconsTest {
         assertEquals(26, all.size)
     }
 
-    @Test
-    fun `handled elsewhere is not the same tick as a download this device performed`() {
-        // §18: the user did not make that decision here, and the affordances differ (§12.6).
-        assertNotEquals(PodsiloIcons.Check, PodsiloIcons.HandledRemotely)
-    }
-
-    @Test
-    fun `a condition the queue is in is not the same icon as input the user can fix`() {
-        // Swapping them makes a typo look like a system fault and vice versa (§18).
-        assertNotEquals(PodsiloIcons.Warning, PodsiloIcons.InputError)
-    }
-
+    /**
+     * `UI.adoc` §18 names pairs that "make the UI lie if used interchangeably" — `HandledRemotely`
+     * against `Check` (the user did not make that decision here, §12.6) and `Warning` against
+     * `InputError` (a queue condition against input the user can fix). Distinctness across the
+     * whole list covers both pairs and every pair nobody has named yet.
+     */
     @Test
     fun `every icon is distinct`() {
         assertTrue("two names share one glyph", all.values.toSet().size == all.size)

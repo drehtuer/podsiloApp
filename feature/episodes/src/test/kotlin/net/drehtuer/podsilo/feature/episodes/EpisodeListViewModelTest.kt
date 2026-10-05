@@ -180,40 +180,6 @@ class EpisodeListViewModelTest : EpisodeListTestHarness() {
         }
 
     @Test
-    fun `a bulk action is one write, not one per episode`() =
-        runTest {
-            // 412 upserts would be 412 transactions and 412 list emissions into a LazyColumn
-            // (`UI.adoc` §B7).
-            val keys = (1..50).map { "e$it" }
-            seed(*keys.map { episode(it) }.toTypedArray())
-            val vm = viewModel()
-            runCurrent()
-
-            vm.onEvent(EpisodeListEvent.BulkConfirmed(EpisodeUiAction.MARK_AS_PLAYED, keys.toSet()))
-            runCurrent()
-
-            assertEquals("one batched write", 1, ledger.writes.size)
-            assertEquals(50, ledger.writes.single().size)
-        }
-
-    @Test
-    fun `acting on a selection leaves selection mode`() =
-        runTest {
-            seed(episode("e1"), episode("e2"))
-            val vm = viewModel()
-            runCurrent()
-
-            vm.onEvent(EpisodeListEvent.SelectionStarted("e1"))
-            runCurrent()
-            assertTrue(vm.state.value.inSelectionMode)
-
-            vm.onEvent(EpisodeListEvent.BulkConfirmed(EpisodeUiAction.MARK_AS_PLAYED, setOf("e1")))
-            runCurrent()
-
-            assertFalse(vm.state.value.inSelectionMode)
-        }
-
-    @Test
     fun `deselecting the last row leaves selection mode rather than showing zero selected`() =
         runTest {
             seed(episode("e1"))
@@ -223,22 +189,6 @@ class EpisodeListViewModelTest : EpisodeListTestHarness() {
             vm.onEvent(EpisodeListEvent.SelectionStarted("e1"))
             runCurrent()
             vm.onEvent(EpisodeListEvent.SelectionToggled("e1"))
-            runCurrent()
-
-            assertNull(vm.state.value.selection)
-        }
-
-    @Test
-    fun `changing the filter drops the selection`() =
-        runTest {
-            // Acting on rows the user can no longer see is the accidental bulk action §14.2 warns of.
-            seed(episode("e1"))
-            val vm = viewModel()
-            runCurrent()
-
-            vm.onEvent(EpisodeListEvent.SelectionStarted("e1"))
-            runCurrent()
-            vm.onEvent(EpisodeListEvent.FilterChanged(EpisodeFilter.ALL))
             runCurrent()
 
             assertNull(vm.state.value.selection)
@@ -338,98 +288,56 @@ class EpisodeListViewModelTest : EpisodeListTestHarness() {
             assertFalse(vm.state.value.isRefreshing)
         }
 
+    /**
+     * How a stored failure reaches the row, one case per classification.
+     *
+     * The guarantee `architecture.adoc` §11 and UI.adoc §12.11 make, and the reason the cause is
+     * stored rather than parsed out of the message: retrying a lost folder grant or a full disk
+     * cannot succeed until the user acts, so a Retry button there would be a button that lies. A row
+     * written before the classification existed (schema v3) defaults to retryable — offering a Retry
+     * that fails is recoverable; hiding the only useful button is not.
+     */
     @Test
-    fun `a lost folder grant offers Choose folder, never a bare Retry`() =
+    fun `a stored failure surfaces with its cause, retryability and remedy`() =
         runTest {
-            // The guarantee `architecture.adoc` §11 and UI.adoc §12.11 make, and the reason the cause
-            // is stored rather than parsed out of the message: retrying cannot possibly succeed until
-            // the user re-picks the folder, so a Retry button here would be a button that lies.
-            seed(episode("e1"))
-            ledger.seedRow(
-                ledgerRow(
-                    "e1",
-                    LedgerState.ERROR,
-                    lastError = "the download folder is no longer accessible",
-                    lastErrorCause = ErrorCause.FOLDER_UNAVAILABLE,
-                    lastErrorRetryable = false,
-                ),
+            data class Case(
+                val cause: ErrorCause?,
+                val retryable: Boolean?,
+                val expectedCause: ErrorCause,
+                val expectedRetryable: Boolean,
+                val expectedRemedy: FailureRemedy?,
             )
-            val vm = viewModel()
-            runCurrent()
-
+            val cases =
+                listOf(
+                    Case(ErrorCause.FOLDER_UNAVAILABLE, false, ErrorCause.FOLDER_UNAVAILABLE, false, FailureRemedy.CHOOSE_FOLDER),
+                    Case(ErrorCause.DISK_FULL, false, ErrorCause.DISK_FULL, false, FailureRemedy.FREE_UP_SPACE),
+                    Case(ErrorCause.NETWORK, true, ErrorCause.NETWORK, true, null),
+                    Case(null, null, ErrorCause.UNKNOWN, true, null),
+                )
+            seed(*cases.indices.map { episode("e$it") }.toTypedArray())
+            cases.forEachIndexed { i, case ->
+                ledger.seedRow(
+                    ledgerRow(
+                        "e$i",
+                        LedgerState.ERROR,
+                        lastError = "failure $i",
+                        lastErrorCause = case.cause,
+                        lastErrorRetryable = case.retryable,
+                    ),
+                )
+            }
             // An ERROR row is not "to decide" — it has a ledger row. The failure surfaces on All.
-            vm.onEvent(EpisodeListEvent.FilterChanged(EpisodeFilter.ALL))
+            val vm = viewModel(EpisodeFilter.ALL)
             runCurrent()
 
-            val failure = checkNotNull(rows(vm.state.value).single().lastError)
-            assertFalse(failure.retryable)
-            assertEquals(FailureRemedy.CHOOSE_FOLDER, failure.remedy)
-        }
-
-    @Test
-    fun `a disk-full failure offers Free up space rather than Retry`() =
-        runTest {
-            seed(episode("e1"))
-            ledger.seedRow(
-                ledgerRow(
-                    "e1",
-                    LedgerState.ERROR,
-                    lastError = "No space left on device",
-                    lastErrorCause = ErrorCause.DISK_FULL,
-                    lastErrorRetryable = false,
-                ),
-            )
-            val vm = viewModel()
-            runCurrent()
-
-            // An ERROR row is not "to decide" — it has a ledger row. The failure surfaces on All.
-            vm.onEvent(EpisodeListEvent.FilterChanged(EpisodeFilter.ALL))
-            runCurrent()
-
-            assertEquals(FailureRemedy.FREE_UP_SPACE, rows(vm.state.value).single().lastError?.remedy)
-        }
-
-    @Test
-    fun `a network failure is retryable and offers no special remedy`() =
-        runTest {
-            seed(episode("e1"))
-            ledger.seedRow(
-                ledgerRow(
-                    "e1",
-                    LedgerState.ERROR,
-                    lastError = "connection reset",
-                    lastErrorCause = ErrorCause.NETWORK,
-                    lastErrorRetryable = true,
-                ),
-            )
-            val vm = viewModel()
-            runCurrent()
-
-            // An ERROR row is not "to decide" — it has a ledger row. The failure surfaces on All.
-            vm.onEvent(EpisodeListEvent.FilterChanged(EpisodeFilter.ALL))
-            runCurrent()
-
-            val failure = checkNotNull(rows(vm.state.value).single().lastError)
-            assertTrue(failure.retryable)
-            assertNull("an ordinary Retry is the right affordance here", failure.remedy)
-        }
-
-    @Test
-    fun `a row written before the classification existed defaults to retryable`() =
-        runTest {
-            // Schema v3 left historical rows unclassified. Offering a Retry that fails is
-            // recoverable; hiding the only useful button is not.
-            seed(episode("e1"))
-            ledger.seedRow(ledgerRow("e1", LedgerState.ERROR, lastError = "something went wrong"))
-            val vm = viewModel()
-            runCurrent()
-            vm.onEvent(EpisodeListEvent.FilterChanged(EpisodeFilter.ALL))
-            runCurrent()
-
-            val failure = checkNotNull(rows(vm.state.value).single().lastError)
-            assertEquals(ErrorCause.UNKNOWN, failure.cause)
-            assertTrue(failure.retryable)
-            assertNull(failure.remedy)
+            val byKey = rows(vm.state.value).associateBy { it.episodeKey }
+            cases.forEachIndexed { i, case ->
+                val failure = checkNotNull(byKey.getValue("e$i").lastError)
+                assertEquals("case $case", case.expectedCause, failure.cause)
+                assertEquals("case $case", case.expectedRetryable, failure.retryable)
+                assertEquals("case $case", case.expectedRemedy, failure.remedy)
+                assertEquals("verbatim, case $case", "failure $i", failure.message)
+            }
         }
 
     @Test

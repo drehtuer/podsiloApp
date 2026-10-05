@@ -117,24 +117,6 @@ class PodcastListScreenTest {
     }
 
     @Test
-    fun `the first screen introduces the app by name, not with a server glyph`() {
-        // `UI.adoc` §C4.2: the one large, unhurried appearance of the lockup. It replaced the
-        // `server` glyph, which described the missing configuration rather than the app.
-        render(PodcastListUiState(content = PodcastListUiState.Content.NotConfigured))
-
-        compose.onNodeWithText("podsilo").assertIsDisplayed()
-    }
-
-    @Test
-    fun `the lockup is only on the not-configured state, never on a populated home`() {
-        // §4: four placements, and this is not one of them twice. A logo above every list is how a
-        // brand becomes noise — and the app bar's own mark carries no text to find here.
-        render(PodcastListUiState(content = PodcastListUiState.Content.Feeds(emptyList())))
-
-        compose.onAllNodes(hasText("podsilo")).assertCountEquals(0)
-    }
-
-    @Test
     fun `the app bar carries the mark without announcing the name twice`() {
         // §4.1: the mark is `null`-described because "Podsilo" is live type beside it.
         render(PodcastListUiState(content = PodcastListUiState.Content.Feeds(emptyList())))

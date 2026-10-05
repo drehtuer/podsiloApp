@@ -16,23 +16,20 @@ import org.junit.Test
  */
 class ListGutterTest {
     @Test
-    fun `a device that reserves nothing still gets the design grid`() {
-        assertEquals(ListGutter, gutterFor(0.dp))
-    }
-
-    @Test
-    fun `a device reserving less than the grid still gets the grid`() {
-        assertEquals(16.dp, gutterFor(8.dp))
-    }
-
-    @Test
-    fun `a device reserving exactly the grid is unchanged`() {
-        assertEquals(16.dp, gutterFor(16.dp))
-    }
-
-    @Test
-    fun `a device reserving more than the grid wins`() {
-        assertEquals(24.dp, gutterFor(24.dp))
+    fun `the gutter is the wider of the design grid and the system's own strip`() {
+        // reserved inset -> gutter
+        val cases =
+            listOf(
+                // A device that reserves nothing still gets the design grid.
+                0.dp to ListGutter,
+                // Less than the grid still gets the grid.
+                8.dp to 16.dp,
+                // Exactly the grid is unchanged.
+                16.dp to 16.dp,
+                // More than the grid wins — the case a fixed 16 dp got wrong.
+                24.dp to 24.dp,
+            )
+        cases.forEach { (inset, expected) -> assertEquals("inset=$inset", expected, gutterFor(inset)) }
     }
 
     /**

@@ -11,6 +11,8 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import net.drehtuer.podsilo.core.model.port.BulkScope
+import net.drehtuer.podsilo.core.model.port.BulkScopeKind
 import net.drehtuer.podsilo.core.model.port.OlderThan
 import net.drehtuer.podsilo.core.model.port.ThemePreference
 import org.junit.Assert.assertEquals
@@ -366,5 +368,103 @@ class SettingsScreensTest {
         }
 
         compose.onNode(hasText("can't be empty", substring = true)).assertIsDisplayed()
+    }
+
+    /** Both bulk buttons open a preview, never a write — the dialog is the safeguard (`decisions/0013`). */
+    @Test
+    fun `each Preview button asks for a preview of its own scope`() {
+        renderSettings(SettingsUiState(markOldOlderThan = OlderThan.MONTH_3, version = "0.1.0"))
+
+        compose.onNodeWithText("Preview & apply").performScrollTo().performClick()
+        compose.onNodeWithText("Preview & apply all").performScrollTo().performClick()
+
+        assertEquals(
+            listOf(
+                SettingsEvent.BulkPreviewRequested(BulkScope(kind = BulkScopeKind.OLDER_THAN)),
+                SettingsEvent.BulkPreviewRequested(BulkScope(kind = BulkScopeKind.ALL_UNDECIDED)),
+            ),
+            settingsEvents,
+        )
+    }
+
+    /** "Immediately visible" (`UI.adoc` §8): the sentence is under the field, not only in S8. */
+    @Test
+    fun `an inline error shows its plain sentence under the field`() {
+        compose.setContent {
+            ConnectDialog(
+                state = ConnectUiState(host = "cloud example.org", inlineError = ConnectError.ADDRESS_HAS_SPACE),
+                onEvent = { connectEvents += it },
+            )
+        }
+
+        compose.onNodeWithText(ConnectError.ADDRESS_HAS_SPACE.message).assertIsDisplayed()
+        // Still submittable: the error informs, it does not trap the user in the dialog.
+        compose.onNodeWithText("Request authorization").performClick()
+        assertTrue(connectEvents.contains(ConnectEvent.Submit))
+    }
+
+    @Test
+    fun `changing an existing instance says the download history is kept`() {
+        // The reassurance that matters before re-pointing the app: handled episodes stay handled.
+        compose.setContent {
+            ConnectDialog(
+                state = ConnectUiState(host = "cloud.example.org", isChangingExisting = true),
+                onEvent = { connectEvents += it },
+            )
+        }
+
+        compose.onNodeWithText("Change Nextcloud instance").assertIsDisplayed()
+        compose.onNode(hasText("download history is kept", substring = true)).assertIsDisplayed()
+    }
+
+    @Test
+    fun `while verifying gpoddersync the dialog says so rather than spinning silently`() {
+        compose.setContent {
+            ConnectDialog(
+                state = ConnectUiState(phase = ConnectUiState.Phase.VerifyingGpodderSync),
+                onEvent = { connectEvents += it },
+            )
+        }
+
+        compose.onNodeWithText("Checking for GPodder Sync…").assertIsDisplayed()
+        compose.onAllNodes(hasText("Request authorization")).assertCountEquals(0)
+    }
+
+    /** §6's live preview: every awkward case is labelled, so the author knows what each line proves. */
+    @Test
+    fun `every preview case is rendered under its own label`() {
+        compose.setContent {
+            NamingScreen(
+                state =
+                    NamingUiState(
+                        previews = PreviewCase.entries.map { NamingPreviewLine(it, "Der Podcast/${it.name}.mp3") },
+                    ),
+                onEvent = { namingEvents += it },
+                onBack = {},
+            )
+        }
+
+        PreviewCase.entries.forEach { case ->
+            compose.onNodeWithText(case.label).performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("Der Podcast/${case.name}.mp3").performScrollTo().assertIsDisplayed()
+        }
+    }
+
+    @Test
+    fun `with no field focused a chip goes into the file template`() {
+        // The file template is the one people edit, so it is the default target.
+        compose.setContent {
+            NamingScreen(
+                state = NamingUiState(folderTemplate = "{podcast}", fileTemplate = "{date}"),
+                onEvent = { namingEvents += it },
+                onBack = {},
+            )
+        }
+
+        compose.onNode(hasText("{title}") and hasClickAction() and !hasSetTextAction()).performClick()
+
+        assertTrue(namingEvents.none { it is NamingEvent.FolderTemplateChanged })
+        val fileEdit = namingEvents.filterIsInstance<NamingEvent.FileTemplateChanged>().single()
+        assertTrue(fileEdit.value, fileEdit.value.contains("{date}") && fileEdit.value.contains("{title}"))
     }
 }

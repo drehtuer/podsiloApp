@@ -383,6 +383,31 @@ class SettingsViewModelTest {
                 )
             }
         }
+
+    @Test
+    fun `a failed export says the backup was not written`() =
+        runTest {
+            archive.outcome = ArchiveOutcome.Failed(ArchiveFailure.WRITE_FAILED)
+            val viewModel = viewModel()
+
+            viewModel.effect.test {
+                viewModel.onEvent(SettingsEvent.BackupDestinationChosen("content://docs/full.zip"))
+
+                assertEquals(
+                    "The backup couldn't be written.",
+                    (awaitItem() as SettingsEffect.ShowMessage).text,
+                )
+            }
+        }
+
+    @Test
+    fun `relative times stay coarse at every scale`() {
+        assertEquals("just now", relativeTime(now.minusSeconds(30), now))
+        assertEquals("59 min ago", relativeTime(now.minusSeconds(59 * 60), now))
+        assertEquals("1 h ago", relativeTime(now.minusSeconds(60 * 60), now))
+        assertEquals("23 h ago", relativeTime(now.minusSeconds(23 * 60 * 60 + 59 * 60), now))
+        assertEquals("2 d ago", relativeTime(now.minusSeconds(2 * 24 * 60 * 60), now))
+    }
 }
 
 /** Shared with the directional-sync tests: one settling helper beats two that drift. */

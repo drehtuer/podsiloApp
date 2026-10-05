@@ -596,4 +596,27 @@ class ConnectViewModelTest {
             assertNull(settings.storedCredentials)
             assertEquals(0, syncTrigger.syncs)
         }
+
+    /**
+     * Submitting an address the field already rejected contacts nothing — a keyboard *Go* is the
+     * one way to submit that does not pass the button — and still leaves the reason in the log.
+     */
+    @Test
+    fun `submitting a rejected address contacts nothing and logs why`() =
+        runTest {
+            val viewModel = viewModel()
+            viewModel.onEvent(ConnectEvent.HostChanged("cloud drehtuer.net"))
+
+            viewModel.onEvent(ConnectEvent.Submit)
+
+            assertTrue("nothing may be contacted", client.startedWith.isEmpty())
+            assertEquals(ConnectError.ADDRESS_HAS_SPACE, viewModel.state.value.inlineError)
+            assertEquals(ConnectUiState.Phase.Editing, viewModel.state.value.phase)
+            assertTrue(
+                log.recorded
+                    .single()
+                    .message
+                    .contains("ADDRESS_HAS_SPACE"),
+            )
+        }
 }

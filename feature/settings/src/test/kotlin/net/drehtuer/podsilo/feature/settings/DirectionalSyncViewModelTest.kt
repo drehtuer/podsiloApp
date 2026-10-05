@@ -88,31 +88,25 @@ class DirectionalSyncViewModelTest {
     )
 
     @Test
-    fun `requesting a pass opens a confirmation and starts nothing`() =
+    fun `requesting a pass opens a confirmation, and cancelling it starts nothing`() =
         runTest {
-            val viewModel = viewModel()
+            listOf(SyncDirection.PULL, SyncDirection.PUSH).forEach { direction ->
+                val viewModel = viewModel()
+                viewModel.state.test {
+                    viewModel.onEvent(SettingsEvent.DirectionalSyncRequested(direction))
+                    val pending = awaitUntil { it.pendingDirectionalSync != null }.pendingDirectionalSync
+                    assertEquals(direction, pending?.direction)
+                    assertTrue(
+                        "$direction: the confirmation is the safeguard, so nothing may run yet",
+                        directionalSync.requests.isEmpty(),
+                    )
 
-            viewModel.state.test {
-                viewModel.onEvent(SettingsEvent.DirectionalSyncRequested(SyncDirection.PULL))
-                awaitUntil { it.pendingDirectionalSync != null }
+                    viewModel.onEvent(SettingsEvent.DirectionalSyncCancelled)
+                    awaitUntil { it.pendingDirectionalSync == null }
+                }
+
+                assertTrue("$direction: cancelling must not run it either", directionalSync.requests.isEmpty())
             }
-
-            assertTrue("the confirmation is the safeguard, so nothing may run yet", directionalSync.requests.isEmpty())
-        }
-
-    @Test
-    fun `cancelling closes the dialog and still starts nothing`() =
-        runTest {
-            val viewModel = viewModel()
-            viewModel.state.test {
-                viewModel.onEvent(SettingsEvent.DirectionalSyncRequested(SyncDirection.PUSH))
-                awaitUntil { it.pendingDirectionalSync != null }
-
-                viewModel.onEvent(SettingsEvent.DirectionalSyncCancelled)
-                awaitUntil { it.pendingDirectionalSync == null }
-            }
-
-            assertTrue(directionalSync.requests.isEmpty())
         }
 
     @Test

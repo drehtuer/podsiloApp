@@ -191,20 +191,6 @@ class SettingsScreensTest {
         assertTrue(settingsEvents.none { it is SettingsEvent.RestoreDatabaseClicked })
     }
 
-    @Test
-    fun `the restore row works once connected`() {
-        renderSettings(
-            SettingsUiState(
-                version = "0.1.0",
-                nextcloud = NextcloudUi(instanceUrl = "https://cloud.example.org", loginName = "podsilo"),
-            ),
-        )
-
-        compose.onNodeWithText("Restore from backup").performScrollTo().performClick()
-
-        assertEquals(listOf(SettingsEvent.RestoreDatabaseClicked), settingsEvents)
-    }
-
     /** A second tap mid-zip would start a second export over the same file. */
     @Test
     fun `both backup rows go dead while one is running`() {

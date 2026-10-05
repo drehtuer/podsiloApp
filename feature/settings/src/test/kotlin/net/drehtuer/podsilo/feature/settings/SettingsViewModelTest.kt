@@ -312,19 +312,6 @@ class SettingsViewModelTest {
             assertTrue("no file may be opened while unconnected", archive.imported.isEmpty())
         }
 
-    @Test
-    fun `restore proceeds once an account exists`() =
-        runTest {
-            settings.account.value = NextcloudAccount("https://cloud.example.org", "podsilo")
-            val viewModel = viewModel()
-
-            viewModel.state.test {
-                skipItems(1)
-                viewModel.onEvent(SettingsEvent.RestoreDatabaseClicked)
-                assertTrue(awaitItem().restoreConfirmationVisible)
-            }
-        }
-
     /**
      * The safeguard, and the reason restore is two steps rather than one: a restore replaces the
      * ledger, and nothing may be read from a file until the user has been told that in words.

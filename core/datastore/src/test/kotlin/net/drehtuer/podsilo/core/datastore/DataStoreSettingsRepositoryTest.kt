@@ -5,6 +5,7 @@ package net.drehtuer.podsilo.core.datastore
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +17,10 @@ import net.drehtuer.podsilo.core.model.port.DEFAULT_SYNC_INTERVAL_MINUTES
 import net.drehtuer.podsilo.core.model.port.NamingSettings
 import net.drehtuer.podsilo.core.model.port.NextcloudAccount
 import net.drehtuer.podsilo.core.model.port.NextcloudCredentials
+import net.drehtuer.podsilo.core.model.port.OlderThan
+import net.drehtuer.podsilo.core.model.port.SwipeAction
+import net.drehtuer.podsilo.core.model.port.SwipeMapping
+import net.drehtuer.podsilo.core.model.port.ThemePreference
 import net.drehtuer.podsilo.core.model.port.TitleCleanupRuleSetting
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -100,6 +105,85 @@ class DataStoreSettingsRepositoryTest {
         }
 
     @Test
+    fun `display and triage settings fall back to their documented defaults when nothing is stored`() =
+        runTest {
+            val repo = repository()
+
+            assertEquals(ThemePreference.SYSTEM, repo.observeTheme().first())
+            assertEquals(
+                SwipeMapping(right = SwipeAction.DOWNLOAD, left = SwipeAction.MARK_AS_PLAYED),
+                repo.observeSwipeMapping().first(),
+            )
+            // Off by default: a download over mobile data is something the user opts into.
+            assertFalse(repo.observeAllowMobileData().first())
+            // Off by default: the mark-old rule writes PLAY actions to the shared log, so it needs
+            // consent given once at the setting (CLAUDE.md §5) — never a default.
+            assertEquals(OlderThan.OFF, repo.observeMarkOldOlderThan().first())
+            assertEquals(0L, repo.observeDeliveredClearedAt().first())
+        }
+
+    @Test
+    fun `display and triage settings round-trip, each under its own key`() =
+        runTest {
+            val repo = repository()
+
+            repo.setTheme(ThemePreference.DARK)
+            repo.setSwipeMapping(SwipeMapping(right = SwipeAction.MARK_AS_PLAYED, left = SwipeAction.NONE))
+            repo.setAllowMobileData(true)
+            repo.setMarkOldOlderThan(OlderThan.MONTH_3)
+            repo.setDeliveredClearedAt(1_752_483_600_000)
+
+            // Read back through a fresh repository over the same store: nothing is cached in memory.
+            val reread = repository()
+            assertEquals(ThemePreference.DARK, reread.observeTheme().first())
+            assertEquals(
+                SwipeMapping(right = SwipeAction.MARK_AS_PLAYED, left = SwipeAction.NONE),
+                reread.observeSwipeMapping().first(),
+            )
+            assertEquals(true, reread.observeAllowMobileData().first())
+            assertEquals(OlderThan.MONTH_3, reread.observeMarkOldOlderThan().first())
+            assertEquals(1_752_483_600_000, reread.observeDeliveredClearedAt().first())
+        }
+
+    /**
+     * Enums are stored by name. A name a later version renamed or dropped must degrade to the
+     * default for that one setting, not throw inside the Flow and take the settings screen with it.
+     */
+    @Test
+    fun `an enum name this build does not know reads back as the default`() =
+        runTest {
+            dataStore.edit { prefs ->
+                prefs[stringPreferencesKey("theme")] = "SEPIA"
+                prefs[stringPreferencesKey("swipe_right")] = "ARCHIVE"
+                prefs[stringPreferencesKey("swipe_left")] = "DOWNLOAD"
+                prefs[stringPreferencesKey("mark_old_older_than")] = "WEEK_2"
+            }
+            val repo = repository()
+
+            assertEquals(ThemePreference.SYSTEM, repo.observeTheme().first())
+            // Only the unknown direction falls back; the readable one is kept.
+            assertEquals(
+                SwipeMapping(right = SwipeAction.DOWNLOAD, left = SwipeAction.DOWNLOAD),
+                repo.observeSwipeMapping().first(),
+            )
+            assertEquals(OlderThan.OFF, repo.observeMarkOldOlderThan().first())
+        }
+
+    @Test
+    fun `unreadable title cleanup rules degrade to no rules, keeping the rest of the naming settings`() =
+        runTest {
+            dataStore.edit { prefs ->
+                prefs[stringPreferencesKey("file_template")] = "{date}_{title}_{guid_short}"
+                prefs[stringPreferencesKey("title_cleanup_rules")] = "{not json"
+            }
+
+            val naming = repository().observeNaming().first()
+
+            assertEquals(emptyList<TitleCleanupRuleSetting>(), naming.titleCleanupRules)
+            assertEquals("{date}_{title}_{guid_short}", naming.fileTemplate)
+        }
+
+    @Test
     fun `credentials round-trip, and the app password is stored encrypted, never plaintext`() =
         runTest {
             val repo = repository()
@@ -133,6 +217,23 @@ class DataStoreSettingsRepositoryTest {
 
             assertNull(repo.nextcloudCredentials())
             assertNull(repo.observeNextcloudAccount().first())
+        }
+
+    /** An account without its secret (an interrupted write, a hand-cleared key) is not credentials. */
+    @Test
+    fun `an account with no stored app password yields no credentials`() =
+        runTest {
+            dataStore.edit { prefs ->
+                prefs[stringPreferencesKey("nextcloud_server_url")] = "https://cloud.example.net"
+                prefs[stringPreferencesKey("nextcloud_username")] = "author"
+            }
+            val repo = repository()
+
+            assertNull(repo.nextcloudCredentials())
+            assertEquals(
+                NextcloudAccount("https://cloud.example.net", "author"),
+                repo.observeNextcloudAccount().first(),
+            )
         }
 
     @Test

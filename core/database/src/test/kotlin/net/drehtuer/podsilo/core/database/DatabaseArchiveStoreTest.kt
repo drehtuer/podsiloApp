@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.runTest
 import net.drehtuer.podsilo.core.database.entity.EpisodeEntity
 import net.drehtuer.podsilo.core.database.entity.EpisodeLedgerEntity
 import net.drehtuer.podsilo.core.database.entity.FeedEntity
+import net.drehtuer.podsilo.core.database.entity.LogEntryEntity
 import net.drehtuer.podsilo.core.database.entity.SyncStateEntity
 import net.drehtuer.podsilo.core.model.port.ArchiveFailure
 import net.drehtuer.podsilo.core.model.port.ArchiveOutcome
@@ -76,6 +77,7 @@ class DatabaseArchiveStoreTest {
             // Losing everything is the scenario this feature exists for.
             db.feedDao().deleteAll()
             db.episodeLedgerDao().deleteAll()
+            db.logDao().clear()
             assertEquals(0, db.episodeLedgerDao().count())
 
             val imported = archive.importFrom(Uri.fromFile(file).toString())
@@ -90,6 +92,49 @@ class DatabaseArchiveStoreTest {
             assertEquals(false, row?.syncedToServer)
             assertEquals("20260101_Episode-one.mp3", row?.writtenFileName)
             assertEquals(715L, db.syncStateDao().get()?.lastEpisodeActionSyncTs)
+            // S8's history comes back too, collapse counter and all — it is the diagnostics a user
+            // restoring after a failure most needs.
+            val logEntry = db.logDao().getAll().single()
+            assertEquals("Feed server did not respond", logEntry.message)
+            assertEquals(3, logEntry.occurrences)
+        }
+
+    @Test
+    fun `an export to a destination that cannot be written reports WRITE_FAILED`() =
+        runTest {
+            seed()
+            File(context.cacheDir, "no-such-dir").deleteRecursively()
+            val unwritable = File(context.cacheDir, "no-such-dir/backup.zip")
+
+            val outcome = archive.exportTo(Uri.fromFile(unwritable).toString())
+
+            assertEquals(ArchiveFailure.WRITE_FAILED, (outcome as ArchiveOutcome.Failed).reason)
+        }
+
+    @Test
+    fun `an import from a file that is not there is unreadable and changes nothing`() =
+        runTest {
+            seed()
+
+            val outcome = archive.importFrom(Uri.fromFile(tempFile("vanished.zip")).toString())
+
+            assertEquals(ArchiveFailure.UNREADABLE, (outcome as ArchiveOutcome.Failed).reason)
+            assertEquals(1, db.episodeLedgerDao().count())
+        }
+
+    /** Both entries are required: a manifest alone has nothing to restore from. */
+    @Test
+    fun `a manifest without a database is not a backup`() =
+        runTest {
+            val file = tempFile("manifest-only.zip")
+            ZipOutputStream(file.outputStream()).use { zip ->
+                zip.putNextEntry(ZipEntry("podsilo-backup.properties"))
+                zip.write("archiveFormat=1\nschemaVersion=1\n".toByteArray())
+                zip.closeEntry()
+            }
+
+            val outcome = archive.importFrom(Uri.fromFile(file).toString())
+            assertEquals(ArchiveFailure.NOT_AN_ARCHIVE, (outcome as ArchiveOutcome.Failed).reason)
         }
 
     /** A backup file the user may copy to a PC must not double as a credential file. */
@@ -219,6 +264,19 @@ class DatabaseArchiveStoreTest {
                 id = SyncStateEntity.SINGLETON_ID,
                 lastEpisodeActionSyncTs = 715,
                 deviceId = "podsilo-test",
+            ),
+        )
+        db.logDao().insert(
+            LogEntryEntity(
+                identity = "FEED https://example.org/feed.xml  feed server did not respond",
+                at = 1_700_000_000_000,
+                category = "FEED",
+                feedUrl = "https://example.org/feed.xml",
+                episodeKey = null,
+                message = "Feed server did not respond",
+                detail = null,
+                occurrences = 3,
+                firstSeenAt = 1_600_000_000_000,
             ),
         )
     }

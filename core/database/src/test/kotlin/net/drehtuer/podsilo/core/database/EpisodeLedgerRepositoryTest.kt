@@ -2,13 +2,18 @@
 
 package net.drehtuer.podsilo.core.database
 
+import app.cash.turbine.test
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import net.drehtuer.podsilo.core.database.repository.EpisodeLedgerRepositoryImpl
 import net.drehtuer.podsilo.core.database.repository.EpisodeListRepositoryImpl
 import net.drehtuer.podsilo.core.database.repository.EpisodeRepositoryImpl
 import net.drehtuer.podsilo.core.database.repository.FeedRepositoryImpl
+import net.drehtuer.podsilo.core.model.Episode
+import net.drehtuer.podsilo.core.model.EpisodeLedgerRow
+import net.drehtuer.podsilo.core.model.ErrorCause
 import net.drehtuer.podsilo.core.model.LedgerState
+import net.drehtuer.podsilo.core.model.port.EpisodeListItem
 import net.drehtuer.podsilo.core.model.port.LedgerFilter
 import net.drehtuer.podsilo.core.model.port.LedgerFilterState
 import org.junit.Assert.assertEquals
@@ -173,17 +178,24 @@ class EpisodeLedgerRepositoryTest : RoomTestBase() {
         }
 
     @Test
-    fun `observeEpisodes DOWNLOADED pairs the episode with its ledger row`() =
+    fun `observeEpisodes DOWNLOADED and SKIPPED each pair the episode with its own ledger row`() =
         runTest {
             feeds.replaceAll(listOf(feed("f")))
-            episodes.replaceForFeed("f", listOf(episode("e", "f", title = "Episode E")))
-            ledger.upsert(ledgerRow("e", "f", LedgerState.DOWNLOADED))
+            episodes.replaceForFeed(
+                "f",
+                listOf(episode("d", "f", title = "Episode D"), episode("s", "f", title = "Episode S")),
+            )
+            ledger.upsert(ledgerRow("d", "f", LedgerState.DOWNLOADED))
+            ledger.upsert(ledgerRow("s", "f", LedgerState.SKIPPED))
 
-            val items = list.observeEpisodes(LedgerFilter(state = LedgerFilterState.DOWNLOADED)).first()
-
-            assertEquals(1, items.size)
-            assertEquals("Episode E", items.single().episode.title)
-            assertEquals(LedgerState.DOWNLOADED, items.single().ledger?.state)
+            listOf(
+                LedgerFilterState.DOWNLOADED to ("Episode D" to LedgerState.DOWNLOADED),
+                LedgerFilterState.SKIPPED to ("Episode S" to LedgerState.SKIPPED),
+            ).forEach { (filter, expected) ->
+                val item = list.observeEpisodes(LedgerFilter(state = filter)).first().single()
+                assertEquals("$filter title", expected.first, item.episode.title)
+                assertEquals("$filter ledger", expected.second, item.ledger?.state)
+            }
         }
 
     @Test
@@ -200,18 +212,129 @@ class EpisodeLedgerRepositoryTest : RoomTestBase() {
             assertEquals(LedgerState.DOWNLOADED, items.single { it.episode.episodeKey == "done" }.ledger?.state)
         }
 
+    /** S2 is one podcast: every tab on it, not just the default one, must stay inside that feed. */
     @Test
-    fun `observeEpisodes narrows to a single feed when feedUrl is set`() =
+    fun `every filter narrows to a single feed when feedUrl is set`() =
         runTest {
             feeds.replaceAll(listOf(feed("f1"), feed("f2")))
-            episodes.replaceForFeed("f1", listOf(episode("a", "f1")))
-            episodes.replaceForFeed("f2", listOf(episode("b", "f2")))
+            episodes.replaceForFeed("f1", listOf(episode("new1", "f1"), episode("dl1", "f1"), episode("sk1", "f1")))
+            episodes.replaceForFeed("f2", listOf(episode("new2", "f2"), episode("dl2", "f2"), episode("sk2", "f2")))
+            ledger.upsert(ledgerRow("dl1", "f1", LedgerState.DOWNLOADED))
+            ledger.upsert(ledgerRow("dl2", "f2", LedgerState.DOWNLOADED))
+            ledger.upsert(ledgerRow("sk1", "f1", LedgerState.SKIPPED))
+            ledger.upsert(ledgerRow("sk2", "f2", LedgerState.SKIPPED))
 
-            val onlyF1 =
-                list
-                    .observeEpisodes(LedgerFilter(state = LedgerFilterState.NEW, feedUrl = "f1"))
+            mapOf(
+                LedgerFilterState.NEW to setOf("new1"),
+                LedgerFilterState.DOWNLOADED to setOf("dl1"),
+                LedgerFilterState.SKIPPED to setOf("sk1"),
+                LedgerFilterState.ALL to setOf("new1", "dl1", "sk1"),
+            ).forEach { (state, expected) ->
+                val items = list.observeEpisodes(LedgerFilter(state = state, feedUrl = "f1")).first()
+                assertEquals("$state scoped to f1", expected, items.map { it.episode.episodeKey }.toSet())
+            }
+            // The ledger-typed port honours the same scope.
+            assertEquals(
+                setOf("dl1", "sk1"),
+                ledger
+                    .observe(LedgerFilter(state = LedgerFilterState.ALL, feedUrl = "f1"))
                     .first()
+                    .map { it.episodeKey }
+                    .toSet(),
+            )
+        }
 
-            assertEquals(listOf("a"), onlyF1.map { it.episode.episodeKey })
+    /**
+     * Every column, through every path a screen reads it by. The `lastErrorCause` projection bug
+     * (see `ActivityQueriesTest`) was a column silently missing from one `SELECT`; this is the same
+     * guard for the rest of the row, so a column added to the entity but not to a query — or to the
+     * mapper but not to the entity — fails here rather than rendering as a quiet `null`.
+     */
+    @Test
+    fun `every episode and ledger column survives the round trip through each read path`() =
+        runTest {
+            feeds.replaceAll(listOf(feed("f")))
+            val full =
+                Episode(
+                    episodeKey = "guid-1",
+                    feedUrl = "f",
+                    guid = "guid-1",
+                    enclosureUrl = "https://example.org/ep1.mp3",
+                    title = "Warum Hamburg immer regnet",
+                    description = "<p>Show notes</p>",
+                    pubDate = 1_752_483_600_000,
+                    durationMs = 1_800_000,
+                    link = "https://example.org/ep1",
+                    imageUrl = "https://example.org/ep1.jpg",
+                    sizeBytes = 42_000_000,
+                )
+            val row =
+                EpisodeLedgerRow(
+                    episodeKey = "guid-1",
+                    feedUrl = "f",
+                    enclosureUrl = "https://example.org/ep1.mp3",
+                    state = LedgerState.ERROR,
+                    actionedAt = 1_752_483_700_000,
+                    syncedToServer = true,
+                    attempts = 3,
+                    lastError = "the download folder is no longer accessible",
+                    lastErrorCause = ErrorCause.FOLDER_UNAVAILABLE,
+                    lastErrorRetryable = false,
+                    writtenFileName = "20250714_Warum-Hamburg-immer-regnet.mp3",
+                    durationSeconds = 1_800,
+                )
+            episodes.replaceForFeed("f", listOf(full))
+            ledger.upsert(row)
+
+            assertEquals(full, episodes.get("guid-1"))
+            assertEquals(full, episodes.observeForFeed("f").first().single())
+            assertEquals(row, ledger.get("guid-1"))
+            assertEquals(row, ledger.observe(LedgerFilter(state = LedgerFilterState.ALL)).first().single())
+            val joined = list.observeEpisodes(LedgerFilter(state = LedgerFilterState.ALL)).first().single()
+            assertEquals(full, joined.episode)
+            assertEquals(row, joined.ledger)
+            assertEquals(EpisodeListItem(full, row), list.observeInFlight().first().single())
+        }
+
+    @Test
+    fun `observeRow follows one row from absent through each later write`() =
+        runTest {
+            ledger.observeRow("a").test {
+                assertNull("no decision yet", awaitItem())
+
+                ledger.upsert(ledgerRow("a", "f", LedgerState.QUEUED))
+                assertEquals(LedgerState.QUEUED, awaitItem()?.state)
+
+                // The detail sheet stays open while the download runs; it must see the outcome.
+                ledger.upsert(ledgerRow("a", "f", LedgerState.DOWNLOADED).copy(writtenFileName = "a.mp3"))
+                val delivered = awaitItem()
+                assertEquals(LedgerState.DOWNLOADED, delivered?.state)
+                assertEquals("a.mp3", delivered?.writtenFileName)
+
+                cancelAndIgnoreRemainingEvents()
+            }
+        }
+
+    /** A bulk write over rows that already exist must update them in place, not duplicate or drop them. */
+    @Test
+    fun `upsertAll inserts new rows and overwrites existing ones by key`() =
+        runTest {
+            ledger.upsert(ledgerRow("a", "f", LedgerState.UNPLAYED, syncedToServer = true))
+
+            ledger.upsertAll(
+                listOf(
+                    ledgerRow("a", "f", LedgerState.SKIPPED),
+                    ledgerRow("b", "f", LedgerState.SKIPPED),
+                ),
+            )
+
+            val rows = ledger.observe(LedgerFilter(state = LedgerFilterState.ALL)).first()
+            assertEquals(setOf("a", "b"), rows.map { it.episodeKey }.toSet())
+            assertEquals(LedgerState.SKIPPED, ledger.get("a")?.state)
+            assertEquals(
+                "the overwrite is back in the outbox",
+                setOf("a", "b"),
+                ledger.getUnsynced().map { it.episodeKey }.toSet(),
+            )
         }
 }

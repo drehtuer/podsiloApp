@@ -110,8 +110,11 @@ class DownloadPipelineInstrumentedTest {
     fun tearDown() {
         // Delete only the file this run created, by the exact name it was written under.
         deliveredFile?.let { findDelivered(it)?.delete() }
-        appDatabase.close()
-        scratchDatabase.close()
+        // JUnit runs @After even when setUp() skipped at its assumeTrue, before either database was
+        // opened. Unguarded, that turned "no folder granted" from a skip into an
+        // UninitializedPropertyAccessException -- a red result for a setup gap (2026-10-05 device run).
+        if (::appDatabase.isInitialized) appDatabase.close()
+        if (::scratchDatabase.isInitialized) scratchDatabase.close()
     }
 
     /**

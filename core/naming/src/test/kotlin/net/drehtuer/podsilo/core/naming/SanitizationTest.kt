@@ -44,28 +44,17 @@ class SanitizationTest {
         assertEquals("Foo Bar", sanitizeComponent("Foo   \t  Bar", transliterate = false))
     }
 
+    /** CLAUDE.md §6: preserve non-ASCII by default -- do not ASCII-strip anyone's language into mush. */
     @Test
-    fun `umlauts survive by default without transliteration`() {
-        val umlauts = "Über Bär" // "Über Bär"
-        assertEquals(umlauts, sanitizeComponent(umlauts, transliterate = false))
-    }
-
-    @Test
-    fun `cjk characters survive untouched`() {
-        val cjk = "日本語のエピソード" // "日本語のエピソード"
-        assertEquals(cjk, sanitizeComponent(cjk, transliterate = false))
-    }
-
-    @Test
-    fun `rtl text survives untouched`() {
-        val rtl = "مرحبا بالعالم" // "مرحبا بالعالم"
-        assertEquals(rtl, sanitizeComponent(rtl, transliterate = false))
-    }
-
-    @Test
-    fun `emoji survive untouched`() {
-        val withEmoji = "Episode 🎧🔥" // "Episode 🎧🔥"
-        assertEquals(withEmoji, sanitizeComponent(withEmoji, transliterate = false))
+    fun `non-ascii text survives untouched without transliteration`() {
+        listOf(
+            "Über Bär", // umlauts
+            "日本語のエピソード", // CJK
+            "مرحبا بالعالم", // RTL
+            "Episode 🎧🔥", // emoji, astral code points
+        ).forEach { text ->
+            assertEquals(text, sanitizeComponent(text, transliterate = false))
+        }
     }
 
     @Test
@@ -83,12 +72,6 @@ class SanitizationTest {
     }
 
     @Test
-    fun `transliteration is off by default behaviour when flag is false`() {
-        val input = "Über" // "Über"
-        assertEquals(input, sanitizeComponent(input, transliterate = false))
-    }
-
-    @Test
     fun `a run of illegal characters becomes a single separator, not empty`() {
         // Illegal characters are replaced, never deleted -- CLAUDE.md section 6 -- so this alone
         // never triggers the "empty after sanitising" fallback; only whitespace-only or
@@ -96,18 +79,11 @@ class SanitizationTest {
         assertEquals("_", sanitizeComponent("///???", transliterate = false))
     }
 
+    /** The only inputs that empty out -- the caller's cue to fall back to `{guid_short}` (CLAUDE.md §6). */
     @Test
-    fun `input that is entirely dots and spaces sanitises to empty`() {
-        assertEquals("", sanitizeComponent("...", transliterate = false))
-    }
-
-    @Test
-    fun `whitespace-only input sanitises to empty`() {
-        assertEquals("", sanitizeComponent("   ", transliterate = false))
-    }
-
-    @Test
-    fun `empty input sanitises to empty`() {
-        assertEquals("", sanitizeComponent("", transliterate = false))
+    fun `dots-and-spaces-only, whitespace-only and empty input sanitise to empty`() {
+        listOf("...", "   ", ". . .", "").forEach { input ->
+            assertEquals("'$input'", "", sanitizeComponent(input, transliterate = false))
+        }
     }
 }

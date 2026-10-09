@@ -6786,7 +6786,7 @@ bump in #132; that is unverified. CI does not run this tier, so nothing else wou
 *Attempted:* cut v0.7.3 right after merging #136.
 
 *What reaches the APK, checked rather than assumed:* `git diff v0.7.2..main -- '*/src/main/**'` is
-three files, one per bug fix from the audit (sanitised `{date}` templates, negative
+three files, one per bug fix from the audit (sanitised `+{date}+` templates, negative
 `itunes:duration` components, the Login Flow crash on a non-Nextcloud answer). The runtime
 libraries also moved: Compose BOM 2026.09.00, WorkManager 2.12.0, Room 2.8.5, Navigation 2.10.2,
 Coil 3.6.3 and core-ktx 1.19.1. AGP, Kotlin, KSP, Gradle and Robolectric changed only the build. The

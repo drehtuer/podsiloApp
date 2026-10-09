@@ -6779,3 +6779,22 @@ attempts, each failing for a reason worth recording:
 all its tests pass. AGP's test engine (`com.android.tools.androidtest.testengine`) writes exit code 1
 to `test-result-exit-code.txt` and logs nothing, even with `--debug`. Possibly related to the AGP 9.4.1
 bump in #132; that is unverified. CI does not run this tier, so nothing else would have noticed.
+
+
+== 2026-10-05 (release) — 0.7.3: three fixes the test audit found
+
+*Attempted:* cut v0.7.3 right after merging #136.
+
+*What reaches the APK, checked rather than assumed:* `git diff v0.7.2..main -- '*/src/main/**'` is
+three files, one per bug fix from the audit (sanitised `+{date}+` templates, negative
+`itunes:duration` components, the Login Flow crash on a non-Nextcloud answer). The runtime
+libraries also moved: Compose BOM 2026.09.00, WorkManager 2.12.0, Room 2.8.5, Navigation 2.10.2,
+Coil 3.6.3 and core-ktx 1.19.1. AGP, Kotlin, KSP, Gradle and Robolectric changed only the build. The
+device set passed on this exact code (61/61, earlier entry), so this release has been on a phone
+before tagging rather than after.
+
+*Found while preparing it:* the published v0.7.1 and v0.7.2 releases both still start with CI's
+placeholder, "`Draft created by CI. Replace these notes, then publish.`" Step 4 of the procedure
+(write the notes, then publish) was skipped both times, and v0.7.2's body is *only* the placeholder.
+Immutable releases mean those bodies cannot be fixed now. 0.7.3's notes are written before
+publishing.

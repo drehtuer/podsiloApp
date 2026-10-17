@@ -41,7 +41,7 @@
 # to the gradle ecosystem. Bumping it is a manual, occasional job.
 [versions]
 agp = "9.4.1"
-kotlin = "2.4.20"
+kotlin = "2.4.21"
 room = "2.8.5"
 datastore = "1.2.1"
 ksp = "2.3.12"

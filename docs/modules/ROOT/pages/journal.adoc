@@ -6798,3 +6798,24 @@ placeholder, "`Draft created by CI. Replace these notes, then publish.`" Step 4 
 (write the notes, then publish) was skipped both times, and v0.7.2's body is *only* the placeholder.
 Immutable releases mean those bodies cannot be fixed now. 0.7.3's notes are written before
 publishing.
+
+
+== 2026-11-06 — `gradlew.bat` was modified without anyone changing it
+
+*Attempted:* the author asked why `git status` listed `gradlew.bat` as modified on a clean `main`.
+
+*What it was:* the file on disk was byte-identical to `HEAD`. Dependabot's gradle-wrapper 9.8.0 bump
+(`a169c66`) committed it with CRLF, while `.gitattributes` says `*.bat text eol=crlf`, meaning LF in
+the repository and CRLF on disk. `git diff` converts the working copy to LF before comparing, so
+every line differed from the stored CRLF. Renormalising stores LF and leaves the working copy alone.
+
+*Not established:* why it surfaced a month after that commit. The file's modification time was nine
+seconds after today's `git pull`, which would make Git re-check it rather than trust its cached
+status, but what touched the file is unknown.
+
+*Not verified:* `gradlew.bat` was not run on Windows. The content check is only that the diff is
+empty when line endings are ignored and that the working copy's bytes did not change. Gradle itself
+was not run either, since only line endings in a script Linux never executes changed.
+
+*Still open:* Dependabot ignored the attribute once and could do it again the next time a wrapper
+bump changes this file.

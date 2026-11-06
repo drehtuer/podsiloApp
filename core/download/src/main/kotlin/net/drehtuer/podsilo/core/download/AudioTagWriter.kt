@@ -99,13 +99,19 @@ private fun writeFields(
     data: AudioTagData,
 ): List<FieldKey> =
     buildList {
-        if (!tag.trySetField(FieldKey.TITLE, data.title)) add(FieldKey.TITLE)
-        if (!tag.trySetField(FieldKey.ARTIST, data.artist)) add(FieldKey.ARTIST)
-        if (!tag.trySetField(FieldKey.ALBUM, data.album)) add(FieldKey.ALBUM)
-        if (!tag.trySetField(FieldKey.GENRE, data.genre)) add(FieldKey.GENRE)
-        data.year?.let { if (!tag.trySetField(FieldKey.YEAR, it)) add(FieldKey.YEAR) }
-        data.trackNumber?.let { if (!tag.trySetField(FieldKey.TRACK, it)) add(FieldKey.TRACK) }
-        data.comment?.let { if (!tag.trySetField(FieldKey.COMMENT, it)) add(FieldKey.COMMENT) }
+        val fields =
+            listOf(
+                FieldKey.TITLE to data.title,
+                FieldKey.ARTIST to data.artist,
+                FieldKey.ALBUM to data.album,
+                FieldKey.GENRE to data.genre,
+                FieldKey.YEAR to data.year,
+                FieldKey.TRACK to data.trackNumber,
+                FieldKey.COMMENT to data.comment,
+            )
+        fields.forEach { (key, value) ->
+            if (value != null && !tag.trySetField(key, value)) add(key)
+        }
     }
 
 private fun Tag.trySetField(

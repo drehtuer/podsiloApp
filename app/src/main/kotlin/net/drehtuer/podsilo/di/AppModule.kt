@@ -89,17 +89,17 @@ object AppModule {
     fun provideAppBuild(): String = "${BuildConfig.VERSION_CODE} · ${BuildConfig.BUILD_TIME} · ${BuildConfig.GIT_SHA}"
 }
 
-/** `@Binds` needs an abstract class, so it can't live in the `object` module above. */
+/** `@Binds` needs an abstract function, so it can't live in the `object` module above. */
 @Module
 @InstallIn(SingletonComponent::class)
-abstract class BindingsModule {
+interface BindingsModule {
     /**
      * The two directional passes S4 offers (`decisions/0025`). A separate port from
      * [SyncTrigger] on purpose: "sync now" and "overwrite the server with my state" are different
      * requests, and one interface with a mode parameter is one typo away from confusing them.
      */
     @Binds
-    abstract fun bindDirectionalSync(workScheduler: WorkScheduler): DirectionalSync
+    fun bindDirectionalSync(workScheduler: WorkScheduler): DirectionalSync
 
     /**
      * Every "I have written something the server needs" in the app arrives here — a finished
@@ -107,12 +107,12 @@ abstract class BindingsModule {
      * `:app` is where the worker it schedules lives, and one port means one place to look.
      */
     @Binds
-    abstract fun bindSyncTrigger(workScheduler: WorkScheduler): SyncTrigger
+    fun bindSyncTrigger(workScheduler: WorkScheduler): SyncTrigger
 
     /**
      * The screens ask "is there a network" before starting a refresh, so an offline pull can answer
      * instantly rather than timing out against every feed (`UI.adoc` §12.10).
      */
     @Binds
-    abstract fun bindConnectivityMonitor(monitor: AndroidConnectivityMonitor): ConnectivityMonitor
+    fun bindConnectivityMonitor(monitor: AndroidConnectivityMonitor): ConnectivityMonitor
 }

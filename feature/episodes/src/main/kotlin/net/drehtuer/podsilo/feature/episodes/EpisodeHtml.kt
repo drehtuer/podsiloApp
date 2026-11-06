@@ -61,17 +61,23 @@ private fun List<HtmlToken>.render(): AnnotatedString =
                     append("• ")
                 }
                 is HtmlToken.Open -> openSpans.addLast(token.tag to length)
-                is HtmlToken.Close -> {
-                    val opened = openSpans.removeLastOrNull { it.first == token.tag } ?: return@forEach
-                    val href = token.href?.takeIf { it.isNavigable() }
-                    styleFor(token.tag, href)?.let { addStyle(it, opened.second, length) }
-                    if (token.tag == "a" && href != null) {
-                        addLink(LinkAnnotation.Url(href), opened.second, length)
-                    }
-                }
+                is HtmlToken.Close -> closeSpan(token, openSpans)
             }
         }
     }
+
+/** A close tag with no matching open tag is dropped: feeds do this, and it only loses formatting. */
+private fun AnnotatedString.Builder.closeSpan(
+    token: HtmlToken.Close,
+    openSpans: ArrayDeque<Pair<String, Int>>,
+) {
+    val opened = openSpans.removeLastOrNull { it.first == token.tag } ?: return
+    val href = token.href?.takeIf { it.isNavigable() }
+    styleFor(token.tag, href)?.let { addStyle(it, opened.second, length) }
+    if (token.tag == "a" && href != null) {
+        addLink(LinkAnnotation.Url(href), opened.second, length)
+    }
+}
 
 /**
  * Compose hands a `LinkAnnotation.Url` straight to an `Intent`, so an **allow-list** is the only

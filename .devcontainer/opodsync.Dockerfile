@@ -19,23 +19,25 @@ ARG OPODSYNC_REF=0.5.3
 # set (README: "PHP 7.4+ and SQLite3 with JSON1"). It uses the procedural \SQLite3
 # class, not PDO. curl is here for the compose healthcheck; git for the clone.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# opodsync's .htaccess is load-bearing, not cosmetic: `FallbackResource /index.php`
-# is what routes the virtual API paths (/index.php/apps/gpoddersync/...) into the
-# front controller, and the `SetEnvIf Authorization` line is what makes the Basic
-# auth header visible to PHP at all. Debian's apache2.conf ships AllowOverride None
-# for /var/www/, which silently ignores the file — every API call then 404s and auth
-# never arrives. Overriding it is mandatory.
-RUN printf '%s\n' \
+    && apt-get install -y --no-install-recommends curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    # opodsync's .htaccess is load-bearing, not cosmetic: `FallbackResource /index.php`
+    # is what routes the virtual API paths (/index.php/apps/gpoddersync/...) into the
+    # front controller, and the `SetEnvIf Authorization` line is what makes the Basic
+    # auth header visible to PHP at all. Debian's apache2.conf ships AllowOverride None
+    # for /var/www/, which silently ignores the file — every API call then 404s and auth
+    # never arrives. Overriding it is mandatory.
+    && printf '%s\n' \
         '<Directory /var/www/html/>' \
         '    AllowOverride All' \
         '</Directory>' \
         > /etc/apache2/conf-available/opodsync.conf \
-    && a2enconf opodsync
-
-RUN git clone --depth 1 --branch "${OPODSYNC_REF}" \
+    && a2enconf opodsync \
+    # Port 80 needs root, and this image drops root below. The official image already
+    # gives www-data Apache's run, lock and log directories.
+    && sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf \
+    && sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8080>/' /etc/apache2/sites-available/000-default.conf \
+    && git clone --depth 1 --branch "${OPODSYNC_REF}" \
         https://github.com/kd2org/opodsync.git /tmp/opodsync \
     && cp -r /tmp/opodsync/server/. /var/www/html/ \
     && cp /tmp/opodsync/config.dist.php /var/www/config.dist.php \
@@ -48,6 +50,8 @@ RUN git clone --depth 1 --branch "${OPODSYNC_REF}" \
 
 COPY opodsync-entrypoint.sh /usr/local/bin/opodsync-entrypoint.sh
 RUN chmod +x /usr/local/bin/opodsync-entrypoint.sh
+
+USER www-data
 
 ENTRYPOINT ["/usr/local/bin/opodsync-entrypoint.sh"]
 CMD ["apache2-foreground"]

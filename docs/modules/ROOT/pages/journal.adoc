@@ -6819,3 +6819,42 @@ was not run either, since only line endings in a script Linux never executes cha
 
 *Still open:* Dependabot ignored the attribute once and could do it again the next time a wrapper
 bump changes this file.
+
+
+== 2026-11-06 (SonarQube) — 43 findings, four of them decisions
+
+*Attempted:* fix every open SonarCloud finding on `main`. Most were mechanical. Four were trade-offs
+that went to the author: platform backup (off), dependency locking (lock files, `decisions/0030`), the
+Claude Code installer's `curl | bash` (kept, HTTPS-only) and opodsync running as root (now `www-data`).
+
+*Not changed in code:* two findings, both resolved in SonarCloud by the author. The installer BLOCKER
+is accepted: it cannot close without a checksum, and the script moves with the `stable` version.
+`NamingViewModel.kt:90` is marked as a false positive: `Throwable.message` is nullable and the target
+is a non-null `String`, so the `?:` is needed.
+
+*What went wrong along the way:*
+
+* `jq` is not installed on the host, so the first paging loop never read the total and kept requesting
+pages until the API refused page 21. Read-only, but careless: it should have stopped at the first error.
+* Gradle's documented lock-all recipe resolves artifacts, which fails on AGP's variant attributes. The
+task resolves dependency graphs instead.
+* Two proofs looked like results and were not. The regression test "failed" in 8 seconds because
+`--tests` does not exist on an Android module's aggregate `test` task, and filtered output hid that.
+Reading the real error, then adding a control run with the fix in place, is what made it a proof.
+Without the fix the test now fails on its assertion; with it the test passes.
+
+*The Dockerfile's `RUN` merge has a cost:* bumping the Antora pin now re-runs `apt-get` too, because
+it shares a layer. Sonar's rule asks for it and the image builds, but that trade favours image size
+over rebuild time, which is not obviously right for a dev container.
+
+*Not verified:* whether Dependabot keeps these lock files up to date here. Reports say a version catalog
+or several modules can stop it, and this project has both. The next bump is the real test.
+
+*Not run:* the device tier, including the new `platformBackupIsDisabled`. `/proc/cpuinfo` has no `vmx`
+or `svm` flags in this WSL session and the KVM modules are not loaded, so opening `/dev/kvm` fails even
+though the node exists. What stands in for it is weaker: Dagger validates the `interface` Hilt module at
+compile time, the test compiles, and `aapt2` shows the three manifest attributes in the built APK. The
+app has not been launched with these changes.
+
+*Unknown until the next scan:* whether `text:S8569` closes. It is raised on the root `build.gradle.kts`,
+and the root project has no `gradle.lockfile` of its own; only the subprojects and `settings` do.

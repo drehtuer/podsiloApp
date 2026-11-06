@@ -121,6 +121,26 @@ class EnclosureDownloaderTest {
         }
 
     @Test
+    fun `a 416 whose partial cannot be deleted is an error, not a second doomed request`() =
+        runBlocking {
+            val file = partialFileContaining("prefix of a file that has since been replaced")
+            val folder = requireNotNull(file.parentFile)
+            server.enqueue(MockResponse().setResponseCode(416))
+            try {
+                assumeTrue(folder.setWritable(false))
+                // root ignores permission bits, so this test only means something for other users.
+                assumeTrue(!folder.canWrite())
+
+                val result = downloader.download(url(), file)
+
+                assertTrue("expected HttpError, got $result", result is EnclosureDownloadResult.HttpError)
+                assertEquals(1, server.requestCount)
+            } finally {
+                folder.setWritable(true)
+            }
+        }
+
+    @Test
     fun `a non-2xx is an HTTP error carrying its code - retry classification is the caller's`() =
         runBlocking {
             for (code in listOf(404, 500)) {

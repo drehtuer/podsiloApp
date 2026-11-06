@@ -285,8 +285,8 @@ class EpisodeDownloader(
     ): File {
         val taggable = File(cacheDir, "${guidShort(episode.episodeKey)}.$extension")
         if (taggable == downloaded) return downloaded
-        taggable.delete()
-        return if (downloaded.renameTo(taggable)) taggable else downloaded
+        val renamed = (!taggable.exists() || taggable.delete()) && downloaded.renameTo(taggable)
+        return if (renamed) taggable else downloaded
     }
 
     /**

@@ -88,7 +88,9 @@ updates:
       prefix: "chore(actions)"
     groups:
       actions:
-        # Eight actions across two workflows (ci.yml and docs.yml), all pinned to a
-        # major tag, and checkout is shared by both. One PR.
+        # Eight actions across two workflows (ci.yml and docs.yml), and checkout is
+        # shared by both. One PR. GitHub's own are pinned to a major tag; the two
+        # third-party ones (Gradle, SonarSource) to a commit SHA with the version in
+        # a trailing comment, which Dependabot updates together.
         patterns:
           - "*"

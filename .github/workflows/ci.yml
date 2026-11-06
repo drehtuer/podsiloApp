@@ -139,7 +139,7 @@ jobs:
           java-version: "17"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c  # v6.4.1
 
       - name: ktlint
         run: ./gradlew ktlintCheck
@@ -203,7 +203,7 @@ jobs:
       # showing last week's number.
       - name: SonarQube scan
         if: ${{ !cancelled() && env.SONAR_TOKEN != '' }}
-        uses: SonarSource/sonarqube-scan-action@v8
+        uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65  # v8.4.1
         with:
           args: >
             -Dsonar.projectVersion=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}

@@ -11,8 +11,6 @@ plugins {
 }
 
 dependencies {
-    // The probe checks real server timestamps against the parser that lives in :core:sync.
-    testImplementation(project(":core:sync"))
     implementation(project(":core:model"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
@@ -20,6 +18,8 @@ dependencies {
     implementation(libs.retrofit.converter.kotlinx.serialization)
     implementation(libs.okhttp)
 
+    // The probe checks real server timestamps against the parser that lives in :core:sync.
+    testImplementation(project(":core:sync"))
     testImplementation(libs.junit4)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)

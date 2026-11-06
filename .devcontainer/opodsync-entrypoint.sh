@@ -38,13 +38,11 @@ const TITLE = 'Podsilo test server (disposable)';
 PHP
 fi
 
-chown -R www-data:www-data "$DATA_DIR"
-
 # Seed the first user through opodsync's OWN GPodder::subscribe(), which does the
 # password hashing (password_hash/PASSWORD_DEFAULT) and username validation. Poking
 # rows into SQLite ourselves would mean reimplementing that — exactly the guessing
-# CLAUDE.md §3 warns against. Runs as www-data so the SQLite file it creates stays
-# writable by Apache. Idempotent: a restart hits "Username already exists", which is
+# CLAUDE.md §3 warns against. The whole image runs as www-data, so the SQLite file it
+# creates stays writable by Apache. Idempotent: a restart hits "Username already exists", which is
 # treated as success.
 if [[ -n "${OPODSYNC_USER:-}" && -n "${OPODSYNC_PASSWORD:-}" ]]; then
     cat > /tmp/opodsync-seed.php <<'PHP'
@@ -70,8 +68,7 @@ if ($error === null) {
     exit(1);
 }
 PHP
-    chmod 0644 /tmp/opodsync-seed.php
-    su www-data -s /bin/sh -c "php /tmp/opodsync-seed.php" \
+    php /tmp/opodsync-seed.php \
         || echo "opodsync: user seeding failed — register manually at /register.php"
     rm -f /tmp/opodsync-seed.php
 fi

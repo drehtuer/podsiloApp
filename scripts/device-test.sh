@@ -60,7 +60,7 @@ fi
 # `emulator-5554` or a previous `<ip>:<port>` entry sits alongside the phone, and Gradle then fails
 # with "found 2 devices" rather than picking one. An ANDROID_SERIAL the caller already set wins,
 # which is how you choose between them.
-if [ -z "${ANDROID_SERIAL:-}" ]; then
+if [[ -z "${ANDROID_SERIAL:-}" ]]; then
     ANDROID_SERIAL="$(adb devices | awk 'NR>1 && $2=="device" {print $1; exit}')"
 fi
 export ANDROID_SERIAL
@@ -74,7 +74,7 @@ esac
 echo "    (CI never runs these — see the header of this script)"
 echo
 
-if [ $# -gt 0 ]; then
+if [[ $# -gt 0 ]]; then
     ./gradlew "$1:connectedDebugAndroidTest"
     exit
 fi
@@ -132,7 +132,7 @@ shopt -u nullglob
 app_apk="${app_apk_matches[0]:-}"
 test_apk=app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
-if [ -z "$app_apk" ] || [ ! -f "$test_apk" ]; then
+if [[ -z "$app_apk" ]] || [[ ! -f "$test_apk" ]]; then
     echo "==> Expected APKs are missing after assembleDebug:" >&2
     echo "    app:  ${app_apk:-<no match for podsilo-*-debug.apk>}" >&2
     echo "    test: $test_apk" >&2
@@ -160,12 +160,12 @@ skipped="$(echo "$result" | grep -c 'AssumptionViolatedException' || true)"
 total="$(echo "$result" | grep -oE 'numtests=[0-9]+' | head -1 | cut -d= -f2)"
 
 echo "    :app — ${total:-?} tests, ${failures} failed, ${skipped} skipped"
-if [ "$failures" -gt 0 ]; then
+if [[ "$failures" -gt 0 ]]; then
     echo "$result" | grep -A6 'INSTRUMENTATION_STATUS: stack=' | head -40
     echo "==> :app FAILED" >&2
     exit 1
 fi
-if [ "$skipped" -gt 0 ]; then
+if [[ "$skipped" -gt 0 ]]; then
     echo "$result" | grep -oE 'AssumptionViolatedException: .*' | sort -u | sed 's|^|    skipped: |'
     echo "==> :app INCOMPLETE — ${skipped} test(s) opted out; a skip is not a pass" >&2
     exit 1

@@ -23,3 +23,4 @@
 ** xref:decisions/0026-manual-sync-only.adoc[0026 — Manual sync only]
 ** xref:decisions/0027-no-paging-3-the-list-is-already-fast-enough.adoc[0027 — No Paging 3]
 ** xref:decisions/0028-coverage-is-measured-but-not-enforced.adoc[0028 — Coverage is measured, not enforced]
+** xref:decisions/0030-gradle-dependency-locking.adoc[0030 — Gradle dependency locking]

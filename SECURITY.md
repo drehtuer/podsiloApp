@@ -84,6 +84,9 @@ Stated so you can check it rather than trust it. Each claim points at where it l
   it is not in the zip and a restored install must be reconnected. The archive *does* contain your
   subscription list, episode titles and show notes in readable form — treat it accordingly
   (`core/model/.../port/DatabaseArchive.kt`).
+- **Android's platform backup is off.** `allowBackup` is false and the extraction rules exclude
+  everything from cloud backup and device-to-device transfer, so your data leaves the app only through
+  an export you ask for. A new phone therefore starts empty unless you restore that export.
 - **Four permissions**, all in
   [`app/src/main/AndroidManifest.xml`](https://github.com/drehtuer/podsiloApp/blob/main/app/src/main/AndroidManifest.xml):
   `INTERNET`, `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_DATA_SYNC` (active downloads), and
@@ -103,10 +106,6 @@ Stated so you can check it rather than trust it. Each claim points at where it l
 Recorded so a report is a surprise rather than a rediscovery. Each is a deliberate trade-off or an
 open backlog item, not an oversight:
 
-- **`android:allowBackup="true"` with no extraction rules.** Android's backup can therefore include
-  the database and DataStore. The app password's ciphertext is useless off-device (the Keystore key
-  is not backed up), but the subscription list and ledger can leave the phone via the platform's
-  backup. Narrowing this is worth doing; it has not been done.
 - **jaudiotagger comes from JitPack**, which builds from a GitHub tag rather than a reviewed registry
   release — a weaker supply-chain trust model, accepted knowingly
   (`architecture.adoc` §11, `third-party.adoc`).

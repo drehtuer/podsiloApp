@@ -22,14 +22,14 @@ AVD_DIR="${ANDROID_AVD_HOME:-$HOME/.android/avd}/${AVD_NAME}.avd"
 
 # Fail loudly rather than degrading to a software-rendered emulator nobody can wait for
 # (CLAUDE.md §11).
-if [ ! -w /dev/kvm ]; then
+if [[ ! -w /dev/kvm ]]; then
     echo "ERROR: /dev/kvm is not writable by $(id -un)." >&2
     echo "       See dev-environment.adoc §3.2 and §8.4 — the emulator needs nested" >&2
     echo "       virtualisation on a Windows 11 host, and Tier 1 works without it." >&2
     exit 1
 fi
 
-if [ ! -d "$AVD_DIR" ]; then
+if [[ ! -d "$AVD_DIR" ]]; then
     echo "Creating AVD $AVD_NAME from $SYSTEM_IMAGE ..."
     echo no | avdmanager create avd -n "$AVD_NAME" -k "$SYSTEM_IMAGE" -d pixel_6 >/dev/null
 
@@ -55,8 +55,8 @@ fi
 
 # Poll the boot flag; never a fixed sleep (CLAUDE.md §4).
 deadline=$((SECONDS + BOOT_TIMEOUT_SECONDS))
-until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; do
-    if [ "$SECONDS" -ge "$deadline" ]; then
+until [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]]; do
+    if [[ "$SECONDS" -ge "$deadline" ]]; then
         echo "ERROR: $AVD_NAME did not finish booting within ${BOOT_TIMEOUT_SECONDS}s." >&2
         echo "       Log: /tmp/emulator-$AVD_NAME.log" >&2
         exit 1

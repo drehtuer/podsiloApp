@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.Flow
  * with a wait reason; WorkManager's own network constraint releases it later. Podsilo never
  * refuses a decision because of a condition that will fix itself.
  */
-interface ConnectivityMonitor {
+fun interface ConnectivityMonitor {
     fun observe(): Flow<Connectivity>
 }
 

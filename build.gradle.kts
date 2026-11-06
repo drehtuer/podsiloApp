@@ -26,6 +26,30 @@ val coverage =
 // `./gradlew ktlintCheck detekt` (CLAUDE.md §7/§8) has something to check as
 // soon as source lands in any of them.
 subprojects {
+    // Pins transitive versions too; the catalog only pins what is named directly. After changing a
+    // dependency: ./gradlew resolveAndLockAll --write-locks (dev-environment.adoc).
+    dependencyLocking {
+        lockAllConfigurations()
+    }
+
+    tasks.register("resolveAndLockAll") {
+        group = "help"
+        description = "Resolves every configuration so that --write-locks can record it."
+        doFirst {
+            require(gradle.startParameter.isWriteDependencyLocks) { "Run with --write-locks." }
+        }
+        doLast {
+            // The graph, not the artifacts: AGP's variant attributes make artifact selection ambiguous
+            // on some configurations no build ever resolves, and a lock only records versions.
+            configurations.filter { it.isCanBeResolved }.forEach { configuration ->
+                val unresolved =
+                    configuration.incoming.resolutionResult.allDependencies
+                        .filterIsInstance<org.gradle.api.artifacts.result.UnresolvedDependencyResult>()
+                check(unresolved.isEmpty()) { "${configuration.name}: could not resolve $unresolved" }
+            }
+        }
+    }
+
     apply(plugin = "org.jlleitschuh.gradle.ktlint")
     apply(plugin = "io.gitlab.arturbosch.detekt")
 

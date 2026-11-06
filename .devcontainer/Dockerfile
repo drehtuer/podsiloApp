@@ -82,35 +82,32 @@ ENV LANG=C.UTF-8 \
 # the header's "distro packages only" rule holds here too.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      openjdk-17-jdk \
+      asciidoctor \
       ca-certificates \
       curl \
       git \
-      openssh-client \
-      unzip \
-      zip \
-      ripgrep \
       jq \
-      python3 \
-      python3-venv \
-      python3-pip \
-      python3-yaml \
-      yamllint \
-      shellcheck \
-      asciidoctor \
+      less \
       nodejs \
       npm \
-      less \
+      openjdk-17-jdk \
+      openssh-client \
       procps \
+      python3 \
+      python3-pip \
+      python3-venv \
+      python3-yaml \
+      ripgrep \
+      shellcheck \
       sudo \
       tzdata \
- && rm -rf /var/lib/apt/lists/*
-
+      unzip \
+      yamllint \
+      zip \
 # kramdoc, the Asciidoctor project's own Markdown converter. `asciidoctor` above
 # brings Ruby and rubygems, so this is the only extra step. --no-document skips
 # rdoc/ri, which nothing here reads.
-RUN gem install --no-document kramdown-asciidoc:2.1.1
-
+ && gem install --no-document kramdown-asciidoc:2.1.1 \
 # Antora builds the documentation site (docs/antora.yml, antora-playbook.yml). It is
 # a Node application, which is the only reason nodejs and npm are in the image at all
 # — nothing in the app, Gradle or the test tiers touches them. Pinned like everything
@@ -126,24 +123,24 @@ RUN gem install --no-document kramdown-asciidoc:2.1.1
 # at render time with `block.$!= is not a function` — an error that names neither the
 # extension nor the version. The pin moves when Antora's bundled Asciidoctor does.
 # Keep it in step with .github/workflows/docs.yml, which installs the same two.
-RUN npm install -g --no-fund --no-audit antora@3.1.10 asciidoctor-kroki@0.18.1
-
+ && npm install -g --ignore-scripts --no-fund --no-audit antora@3.1.10 asciidoctor-kroki@0.18.1 \
 # --- Android emulator runtime libraries ---------------------------------------
 # Only needed for Tier 2 (headless emulator inside the container). Safe to drop
-# this layer if you only ever use Tier 1 (JVM tests) and Tier 3 (emulator on the
+# this install if you only ever use Tier 1 (JVM tests) and Tier 3 (emulator on the
 # Windows host). Note noble renamed libasound2 -> libasound2t64.
-RUN apt-get update \
  && apt-get install -y --no-install-recommends \
+      fontconfig \
       libasound2t64 \
-      libpulse0 \
       libdbus-1-3 \
-      libnss3 \
+      libfontconfig1 \
+      libfreetype6 \
       libgl1 \
       libglu1-mesa \
       libice6 \
+      libnss3 \
+      libpulse0 \
       libsm6 \
       libx11-6 \
-      libxcb1 \
       libxcb-cursor0 \
       libxcb-icccm4 \
       libxcb-image0 \
@@ -151,18 +148,14 @@ RUN apt-get update \
       libxcb-render-util0 \
       libxcb-shape0 \
       libxcb-xkb1 \
+      libxcb1 \
       libxcursor1 \
       libxi6 \
-      libxkbcommon0 \
       libxkbcommon-x11-0 \
+      libxkbcommon0 \
       libxkbfile1 \
       libxrandr2 \
       libxtst6 \
-      fontconfig \
-      libfontconfig1 \
-      libfreetype6 \
- && rm -rf /var/lib/apt/lists/*
-
 # --- Docker CLI (docker-outside-of-docker) -------------------------------------
 # For the disposable opodsync test sync server (CLAUDE.md §4). devcontainer.json
 # bind-mounts the HOST's /var/run/docker.sock, so containers started from in here
@@ -172,10 +165,9 @@ RUN apt-get update \
 # docker-cli in noble). The daemon it ships is simply never started; only the
 # client binary is used. Both packages come from Ubuntu's own archive, keeping
 # this image free of third-party apt repositories as the header promises.
-RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      docker.io \
       docker-compose-v2 \
+      docker.io \
  && rm -rf /var/lib/apt/lists/*
 
 # --- GitHub CLI ----------------------------------------------------------------
@@ -188,7 +180,7 @@ RUN apt-get update \
 # Swap for `apt-get install gh` if the older version is ever preferable.
 ARG GH_VERSION=2.97.0
 RUN arch="$(dpkg --print-architecture)" \
- && curl -fsSL -o /tmp/gh.tar.gz \
+ && curl --proto '=https' --proto-redir '=https' -fsSL -o /tmp/gh.tar.gz \
       "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" \
  && tar -xzf /tmp/gh.tar.gz -C /tmp \
  && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh \
@@ -225,9 +217,8 @@ RUN if getent passwd "${USER_UID}" >/dev/null; then \
 # Installed under /opt (part of the image) and kept separate from $ANDROID_HOME
 # (a named volume), so mounting the volume never shadows sdkmanager.
 ENV ANDROID_CMDLINE_TOOLS=/opt/android-cmdline-tools
-RUN curl -fsSL -o /tmp/cmdline-tools.zip \
-      "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_BUILD}_latest.zip" \
- && mkdir -p "${ANDROID_CMDLINE_TOOLS}" \
+ADD "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_BUILD}_latest.zip" /tmp/cmdline-tools.zip
+RUN mkdir -p "${ANDROID_CMDLINE_TOOLS}" \
  && unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools \
  && mv /tmp/cmdline-tools/cmdline-tools "${ANDROID_CMDLINE_TOOLS}/latest" \
  && rm -rf /tmp/cmdline-tools.zip /tmp/cmdline-tools
@@ -275,7 +266,7 @@ ARG CLAUDE_CODE_VERSION=stable
 RUN if [ "${CLAUDE_CODE_VERSION}" = "skip" ]; then \
       echo "Skipping Claude Code (CLAUDE_CODE_VERSION=skip)."; \
     else \
-      { curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+      { curl --proto '=https' --proto-redir '=https' -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
         && claude --version; } \
       || { echo; \
            echo "Claude Code install failed."; \

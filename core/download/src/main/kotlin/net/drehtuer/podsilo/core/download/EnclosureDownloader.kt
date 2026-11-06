@@ -133,10 +133,10 @@ class EnclosureDownloader(
             return when {
                 // 416 means our partial no longer prefixes what the server has (the episode file was
                 // replaced). Appending would silently produce a corrupt file, so start over — once.
-                response.code == HTTP_RANGE_NOT_SATISFIABLE && allowRestart -> {
-                    destination.delete()
+                // A partial that cannot be deleted falls through to HttpError: asking again would
+                // send the same Range and get the same 416.
+                response.code == HTTP_RANGE_NOT_SATISFIABLE && allowRestart && destination.delete() ->
                     attempt(enclosureUrl, destination, onProgress, allowRestart = false)
-                }
                 !response.isSuccessful -> EnclosureDownloadResult.HttpError(response.code, response.message)
                 // 200 in reply to a Range request = the server ignored it (many podcast hosts do).
                 // The body is the whole file, so anything already on disk must be discarded.

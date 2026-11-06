@@ -34,6 +34,9 @@ private const val LOGIN_FLOW_PATH = "index.php/login/v2"
 private const val APP_PASSWORD_PATH = "ocs/v2.php/core/apppassword"
 private const val HTTP_NOT_FOUND = 404
 private const val HTTP_OK = 200
+private const val HEADER_USER_AGENT = "User-Agent"
+private const val HTTP_SCHEME_PREFIX = "http://"
+private const val HTTPS_SCHEME_PREFIX = "https://"
 
 private val loginJson = Json { ignoreUnknownKeys = true }
 
@@ -67,7 +70,7 @@ class RetrofitNextcloudLoginFlowClient(
                     .url(root.newBuilder().addPathSegments(LOGIN_FLOW_PATH).build())
                     // Nextcloud requires a POST with no body here; an empty one keeps OkHttp happy.
                     .post(ByteArray(0).toRequestBody())
-                    .header("User-Agent", USER_AGENT)
+                    .header(HEADER_USER_AGENT, USER_AGENT)
                     .build()
 
             httpClient.newCall(request).execute().use { response ->
@@ -103,7 +106,7 @@ class RetrofitNextcloudLoginFlowClient(
                         .Builder()
                         .url(flow.pollEndpoint)
                         .post(FormBody.Builder().add("token", flow.token).build())
-                        .header("User-Agent", USER_AGENT)
+                        .header(HEADER_USER_AGENT, USER_AGENT)
                         .build()
 
                 // A NETWORK FAILURE ON ONE ATTEMPT IS NOT THE END OF THE FLOW.
@@ -140,7 +143,7 @@ class RetrofitNextcloudLoginFlowClient(
                                 // after, not just once.
                                 serverUrl =
                                     dto.server.keepingSchemeAtLeastAsSecureAs(
-                                        flow.pollEndpoint.startsWith("https://"),
+                                        flow.pollEndpoint.startsWith(HTTPS_SCHEME_PREFIX),
                                     ),
                                 loginName = dto.loginName,
                                 appPassword = dto.appPassword,
@@ -168,7 +171,7 @@ class RetrofitNextcloudLoginFlowClient(
                     .Builder()
                     .url(root.newBuilder().addPathSegments("index.php/apps/gpoddersync/subscriptions").build())
                     .header("Authorization", Credentials.basic(credentials.username, credentials.appPassword))
-                    .header("User-Agent", USER_AGENT)
+                    .header(HEADER_USER_AGENT, USER_AGENT)
                     .build()
 
             httpClient.newCall(request).execute().use { response ->
@@ -203,7 +206,7 @@ class RetrofitNextcloudLoginFlowClient(
                     // easiest thing to get wrong about this API.
                     .header("OCS-APIRequest", "true")
                     .header("Accept", "application/json")
-                    .header("User-Agent", USER_AGENT)
+                    .header(HEADER_USER_AGENT, USER_AGENT)
                     .build()
 
             httpClient.newCall(request).execute().use { response ->
@@ -244,7 +247,7 @@ class RetrofitNextcloudLoginFlowClient(
  * request is then Android's to refuse, and it reports [LoginFlowFailure.CLEARTEXT_BLOCKED].
  */
 internal fun String.keepingSchemeAtLeastAsSecureAs(secure: Boolean): String =
-    if (secure && startsWith("http://")) "https://" + removePrefix("http://") else this
+    if (secure && startsWith(HTTP_SCHEME_PREFIX)) HTTPS_SCHEME_PREFIX + removePrefix(HTTP_SCHEME_PREFIX) else this
 
 /**
  * Accepts what a person actually types: a bare host, an explicit scheme, or a subdirectory install
@@ -265,12 +268,12 @@ internal fun String.normalisedRoot(): HttpUrl? {
     val trimmed = trim()
     if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
     val withScheme =
-        if (trimmed.startsWith("http://") ||
-            trimmed.startsWith("https://")
+        if (trimmed.startsWith(HTTP_SCHEME_PREFIX) ||
+            trimmed.startsWith(HTTPS_SCHEME_PREFIX)
         ) {
             trimmed
         } else {
-            "https://$trimmed"
+            HTTPS_SCHEME_PREFIX + trimmed
         }
     return withScheme.trimEnd('/').plus("/").toHttpUrlOrNull()
 }

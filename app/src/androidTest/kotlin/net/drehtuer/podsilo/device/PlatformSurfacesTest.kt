@@ -3,6 +3,7 @@
 package net.drehtuer.podsilo.device
 
 import android.content.ComponentName
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -70,6 +71,17 @@ class PlatformSurfacesTest {
             )
 
         assertEquals(PackageManager.PERMISSION_GRANTED, granted)
+    }
+
+    /**
+     * The platform backup stays off: the ledger and the subscription list leave the phone only
+     * through S4's *Export database*, which the user asks for. Read from the installed package, as
+     * above. `res/xml/data_extraction_rules.xml` covers the device-to-device transfer this flag does
+     * not.
+     */
+    @Test
+    fun platformBackupIsDisabled() {
+        assertEquals(0, context.applicationInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP)
     }
 
     /**

@@ -1,0 +1,41 @@
+= 0030 -- Gradle dependency locking
+// SPDX-License-Identifier: GPL-3.0-or-later
+:idprefix:
+:idseparator: -
+
+*Status:* Accepted (2026-11-06). Prompted by SonarQube rule `text:S8569`; the author chose lock files
+over verification metadata and over leaving things as they were.
+
+== Context
+
+`gradle/libs.versions.toml` pins every dependency this project names (CLAUDE.md §3). It says nothing
+about what those dependencies pull in, so a transitive version could change without any change here.
+
+== Decision
+
+Every subproject locks all of its configurations, and the lock files are committed. A build that
+resolves a version the lock does not allow fails. Regenerate after changing a dependency:
+
+[,console]
+----
+./gradlew resolveAndLockAll --write-locks
+----
+
+The task resolves dependency graphs rather than artifacts. Resolving artifacts fails on Android
+modules, where AGP's variant attributes leave the choice ambiguous on configurations no build uses.
+
+== Not chosen
+
+*`gradle/verification-metadata.xml`* checks artifact checksums, which lock files do not, so it is the
+one that would notice a tampered artifact, including one from JitPack. It would also need regenerating
+on every dependency bump. Lock files pin versions and nothing more.
+
+== Consequences
+
+* *Dependabot is the open question.* GitHub supports `gradle.lockfile`, but reports exist of it not
+updating lock files in projects with a version catalog or several modules, and this project has both.
+If a bump arrives without its lock files, CI fails on that PR. Run the command above on its branch.
+* Build plugins are not locked. Only subproject configurations are, so `plugins {}` versions remain
+pinned by the catalog alone.
+* Lock files add about 3,600 generated lines to the repository, and a dependency bump can touch
+several of them.

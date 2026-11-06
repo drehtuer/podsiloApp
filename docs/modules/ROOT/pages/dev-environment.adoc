@@ -401,6 +401,20 @@ Gradle distribution, the AGP/Kotlin toolchain, and Robolectric's `android-all` j
 project's own debug key when `keystore/` is present, and with AGP's generated
 `~/.android/debug.keystore` when it is not -- see <<10-builds-versioning-and-release-signing,§10>>.
 
+=== Dependency lock files
+
+Every module commits a `gradle.lockfile` that pins its transitive versions too, and a build fails if it
+resolves anything else (`decisions/0030`). After changing a dependency, regenerate them and commit the
+result:
+
+[,console]
+----
+./gradlew resolveAndLockAll --write-locks
+----
+
+If a Dependabot PR fails on a version "enforced by Dependency Locking", run the same command on its
+branch.
+
 === YAML and shell linting
 
 `ktlintCheck` and `detekt` cover Kotlin, which leaves two languages in this repository that nothing
@@ -691,7 +705,7 @@ What the set covers, in rough order of what it has actually caught:
 
 | Platform surfaces
 | `PlatformSurfacesTest`
-| the foreground-service type as installed, its permission, and that cleartext `http://` is refused
+| the foreground-service type as installed, its permission, that cleartext `http://` is refused, and that platform backup is off
 
 |
 | `SafDownloadTargetInstrumentedTest`

@@ -32,9 +32,13 @@ on every dependency bump. Lock files pin versions and nothing more.
 
 == Consequences
 
-* *Dependabot is the open question.* GitHub supports `gradle.lockfile`, but reports exist of it not
-updating lock files in projects with a version catalog or several modules, and this project has both.
-If a bump arrives without its lock files, CI fails on that PR. Run the command above on its branch.
+* *Dependabot has updated the lock files so far.* GitHub supports `gradle.lockfile`, but reports exist of
+it not doing so in projects with a version catalog or several modules, and this project has both. The
+first two bumps, #147 and #148, updated their lock files and passed CI. If a later bump arrives without
+them, CI fails on that PR. Run the command above on its branch.
+* *`text:S8569` is accepted rather than closed.* SonarQube raises it on the root `build.gradle.kts`, and
+the root project has no `gradle.lockfile` because locking is only enabled for subprojects. A root file
+would lock little or nothing, and whether it would close the finding is untested.
 * Build plugins are not locked. Only subproject configurations are, so `plugins {}` versions remain
 pinned by the catalog alone.
 * Lock files add about 3,600 generated lines to the repository, and a dependency bump can touch

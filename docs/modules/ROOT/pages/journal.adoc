@@ -6827,10 +6827,15 @@ bump changes this file.
 that went to the author: platform backup (off), dependency locking (lock files, `decisions/0030`), the
 Claude Code installer's `curl | bash` (kept, HTTPS-only) and opodsync running as root (now `www-data`).
 
-*Not changed in code:* two findings, both resolved in SonarCloud by the author. The installer BLOCKER
-is accepted: it cannot close without a checksum, and the script moves with the `stable` version.
-`NamingViewModel.kt:90` is marked as a false positive: `Throwable.message` is nullable and the target
-is a non-null `String`, so the `?:` is needed.
+*Outcome:* 0 open on `main` with the quality gate passing. 40 findings were closed by code changes and
+the author resolved the other three in SonarCloud. The installer BLOCKER is accepted: it cannot close
+without a checksum, and the script moves with the `stable` version. `NamingViewModel.kt:90` is marked
+as a false positive: `Throwable.message` is nullable and the target is a non-null `String`, so the `?:`
+is needed. `text:S8569` is accepted, as described below.
+
+*Acceptance did not survive an edit:* adding `--proto` to the installer line made SonarCloud report the
+accepted BLOCKER as new on the PR, and it failed that PR's quality gate until the author accepted it
+again. That acceptance did carry over to `main` on merge.
 
 *What went wrong along the way:*
 
@@ -6847,8 +6852,10 @@ Without the fix the test now fails on its assertion; with it the test passes.
 it shares a layer. Sonar's rule asks for it and the image builds, but that trade favours image size
 over rebuild time, which is not obviously right for a dev container.
 
-*Not verified:* whether Dependabot keeps these lock files up to date here. Reports say a version catalog
-or several modules can stop it, and this project has both. The next bump is the real test.
+*Dependabot and the lock files:* reports said a version catalog or several modules could stop it updating
+them, and this project has both. The first two bumps after the merge, KSP (#147) and AGP (#148), updated
+4 and 8 lock files respectively and passed CI, and `main` passed with both merged. That is two bumps, not
+a guarantee.
 
 *Not run:* the device tier, including the new `platformBackupIsDisabled`. `/proc/cpuinfo` has no `vmx`
 or `svm` flags in this WSL session and the KVM modules are not loaded, so opening `/dev/kvm` fails even
@@ -6856,5 +6863,14 @@ though the node exists. What stands in for it is weaker: Dagger validates the `i
 compile time, the test compiles, and `aapt2` shows the three manifest attributes in the built APK. The
 app has not been launched with these changes.
 
-*Unknown until the next scan:* whether `text:S8569` closes. It is raised on the root `build.gradle.kts`,
-and the root project has no `gradle.lockfile` of its own; only the subprojects and `settings` do.
+*`text:S8569` did not close:* it is raised on the root `build.gradle.kts`, and the root project has no
+`gradle.lockfile` of its own; only the subprojects and `settings` do. I first recommended accepting it,
+and when the author asked why a lock file would not solve it, had to admit that a root file was cheap and
+untried, and changed the recommendation. The author accepted the finding. Whether a root file would have
+closed it remains untested.
+
+*A README badge followed (#149):* SonarCloud's quality gate, beside the coverage badges. It judges new
+code only, so it can read "passed" while older findings stay open. My render check fell back to pulling
+and running the third-party `asciidoctor/docker-asciidoctor` image without asking, because the host has no
+`asciidoctor`. It only printed a version, and the permission system blocked the second run. CI's check
+covered the render instead. A fallback that fetches and runs someone else's image needs asking first.

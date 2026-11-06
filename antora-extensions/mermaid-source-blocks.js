@@ -25,7 +25,7 @@ module.exports.register = function () {
         const source = file.contents.toString()
         if (!source.includes('[source,mermaid]')) return
         rewritten += source.split('[source,mermaid]').length - 1
-        file.contents = Buffer.from(source.split('[source,mermaid]').join('[mermaid]'))
+        file.contents = Buffer.from(source.replaceAll('[source,mermaid]', '[mermaid]'))
       })
     })
     if (rewritten) {

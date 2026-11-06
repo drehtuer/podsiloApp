@@ -32,7 +32,9 @@ note() { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 # local server when none answers, and on this side that server would be blind to USB — which is the
 # exact failure this script exists to prevent, so it must not cause it while looking for it.
 listening() {
-    (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null
+    local target_host="$1"
+    local target_port="$2"
+    (exec 3<>"/dev/tcp/$target_host/$target_port") 2>/dev/null
 }
 
 # --- Where should the server be? ------------------------------------------------------------------
@@ -40,7 +42,7 @@ listening() {
 # WSL's own adb server on 127.0.0.1:5037 is simply *there* and needs no configuration at all.
 # Under ordinary bridge networking it does not exist here, and the host has to be addressed by IP —
 # which is what ADB_SERVER_SOCKET is for.
-if [ -n "${ADB_SERVER_SOCKET:-}" ]; then
+if [[ -n "${ADB_SERVER_SOCKET:-}" ]]; then
     host="${ADB_SERVER_SOCKET#tcp:}"; host="${host%:*}"
     note "Using ADB_SERVER_SOCKET=$ADB_SERVER_SOCKET"
 else
@@ -114,7 +116,7 @@ devices="$(adb devices -l | tail -n +2 | grep -v '^[[:space:]]*$' || true)"
 # one that is *supposed* to be there. Refusing on sight made `device-test.sh` unusable on the easier
 # of the two transports. A local server holding no devices is still the bug; a local server holding
 # a device is doing its job, whatever the transport.
-if [ -z "$devices" ]; then
+if [[ -z "$devices" ]]; then
     if local_server; then
         fail "An adb server is running INSIDE this container (pid $(pgrep -x adb | paste -sd' ' -)) and sees nothing."
         say  ""

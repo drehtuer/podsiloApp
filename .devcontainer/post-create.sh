@@ -21,7 +21,7 @@ warn() { printf '\n\033[1;33m!!  %s\033[0m\n' "$*"; }
 # >= 36 to even resolve (AAR metadata check) — discovered building the hello
 # world skeleton, not a pre-emptive bump. The emulator system image stays on
 # android-35 for now; Tier 2 is out of scope for that change (see journal).
-: "${SDK_PACKAGES:=platform-tools platforms;android-37.0 build-tools;37.0.0 emulator system-images;android-35;google_apis;x86_64}"
+: "${SDK_PACKAGES:=platform-tools platforms;android-37.2 build-tools;37.0.0 emulator system-images;android-35;google_apis;x86_64}"
 
 # The system image is ~1.5 GB. Set to 0 to skip it if you only use Tier 1
 # (JVM tests) and Tier 3 (emulator on the Windows host).

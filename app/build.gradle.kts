@@ -60,7 +60,10 @@ val buildTimestamp: String =
 
 android {
     namespace = "net.drehtuer.podsilo"
-    compileSdk = 37
+    // 37.2, not 37.0: Compose 1.13 (BOM 2026.11.01) fails the AAR metadata check below 37.1.
+    compileSdk {
+        version = release(37) { minorApiLevel = 2 }
+    }
 
     defaultConfig {
         applicationId = "net.drehtuer.podsilo"

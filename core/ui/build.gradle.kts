@@ -10,7 +10,9 @@ plugins {
 
 android {
     namespace = "net.drehtuer.podsilo.core.ui"
-    compileSdk = 37
+    compileSdk {
+        version = release(37) { minorApiLevel = 2 }
+    }
 
     defaultConfig {
         minSdk = 33

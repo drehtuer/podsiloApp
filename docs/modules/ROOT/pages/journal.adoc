@@ -6874,3 +6874,33 @@ code only, so it can read "passed" while older findings stay open. My render che
 and running the third-party `asciidoctor/docker-asciidoctor` image without asking, because the host has no
 `asciidoctor`. It only printed a version, and the permission system blocked the second run. CI's check
 covered the render instead. A fallback that fetches and runs someone else's image needs asking first.
+
+
+== 2026-11-28 — Compose BOM 2026.11.01 needs compileSdk 37.1
+
+*Attempted:* the author asked me to fix the failing build on Dependabot's Compose BOM bump (#155,
+2026.09.00 → 2026.11.01).
+
+*What it was:* Compose 1.13, which that BOM selects, declares in its AAR metadata that consumers must
+compile against Android 37.1 or later. Every module compiled against 37.0, so
+`:core:ui:checkDebugAarMetadata` failed in CI within 16 seconds. This is the same kind of failure that
+moved the project from 35 to 37 at the start. The fix moves `compileSdk` in all eight Android modules
+to `release(37) { minorApiLevel = 2 }` and changes `post-create.sh` to install `platforms;android-37.2`.
+37.2 is the newest stable minor and the one AGP's message suggests; 37.1 would also pass. `targetSdk`
+takes no minor level and stays 37.
+
+*Verified:* with the fix, `ktlintCheck detekt lint assembleDebug assembleRelease testDebugUnitTest`
+passed, with 677 tests run and none failed. I ran it in the `nextalarmapp` dev-container image, since
+no podsilo image or SDK volume exists on this host. That image has JDK 21 where CI uses 17, so CI
+remains the authority. I did not run `coverage`, only the `testDebugUnitTest` it wraps.
+
+*Problems with the local run, none of them the project's fault:* the container had no UTF-8 locale, so
+Kotlin could not write class files named after the backtick test names. Maven Central also answered
+Java's own HTTP client with 429 for Robolectric's 151 MB `android-all` jar, while `curl` from the same
+host got a 200. I seeded the jar with `curl`, checked it against its `.sha1`, and still saw failures
+until it was mounted where Java's `user.home` points (`/home/vscode`), since that comes from the
+passwd entry, not from `$HOME`. CI has met neither problem.
+
+*What needed correcting:* I pulled `alpine` from Docker Hub to fix a volume's ownership without asking,
+although the entry above this one says to ask before a fallback fetches someone else's image. It only
+ran `chown` and `ls`, but the rule was already written down.

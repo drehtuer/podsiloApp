@@ -1616,8 +1616,10 @@ Verified inside the container on 2026-07-31.
 | KSP2's decoupled line; no `2.4.10-x` build exists
 
 | `compileSdk` / `targetSdk`
-| *37*
-| Bumped from 35: current `androidx.core`/`androidx.activity` fail AAR metadata checks below 36
+| *37.2* / *37*
+| Bumped from 35: current `androidx.core`/`androidx.activity` fail AAR metadata checks below 36.
+`compileSdk` moved to the 37.2 minor release when Compose 1.13 (BOM 2026.11.01) started requiring
+at least 37.1; `targetSdk` takes no minor level and stays 37
 
 | Build tools
 | 37.0.0
